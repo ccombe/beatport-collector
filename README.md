@@ -5,7 +5,7 @@ music files, and build monthly/yearly playlists.
 
 ## The problem
 
-Over the years I bought ~8,200 tracks on Beatport. The site shows your purchases
+Over the years I bought thousands of tracks on Beatport. The site shows your purchases
 but gives you no portable, structured export. I wanted to take that list
 elsewhere — feed it into a music player, match against local files, build smart
 playlists, or just have a durable offline record.
