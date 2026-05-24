@@ -1,0 +1,32 @@
+# Environment
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+wheels/
+
+# Virtual environment
+.venv
+
+# Beatport session (no longer used, legacy)
+beatport_session.json
+
+# Collected data CSVs (track libraries)
+*.csv
+
+# Testing
+.pytest_cache/
+
+# Playlists
+playlists/
+
+# Music catalog (rebuilt from scratch each scan)
+music_catalog.db
+
+# IDE
+.vscode/
+.idea/
