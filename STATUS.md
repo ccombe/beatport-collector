@@ -70,8 +70,8 @@ Match 8277 Beatport purchase CSV rows to local music files and generate playlist
 - Maxime Dangles — retagged `Deeper` → `Deepeer`, `Mon Ami Keuz` → `Mon Ami Keuz`, album `Deeper EP` → `Deepeer`
 
 ### Files Located (by user)
-- David K — DAM´Beat For Klub → `G:\My Drive\Music\David K\2012 - Klub Klub Elite Vol.2`
-- Daniel Boon, Stereo Jack — 11 → `G:\My Drive\Music\Various Artists\2011 - Techno Underground Volume 7` (tag title mismatch)
+- David K — DAM´Beat For Klub — found on disk
+- Daniel Boon, Stereo Jack — 11 — found on disk (tag title mismatch)
 - Sascha Funke — The Intimate Touch, Fur Die Liebe, Double-Checked
 - Super Flu — Die Størne (retagged)
 - Maxime Dangles — Deeper/Deepeer EP
@@ -117,7 +117,7 @@ The music directory (`music_dir`) is a **required positional argument** — noth
 
 Rekordbox does **not** support drag-and-drop of M3U files. Use the XML instead:
 
-1. **Import your music**: `File → Import → Import Folder` → select `G:\My Drive\Music`
+1. **Import your music**: `File → Import → Import Folder` → select your music directory
 2. **Import playlists**: `Preferences → Advanced → Database → Imported Library` → browse to `playlists/rekordbox_playlists.xml`
 3. Playlists appear under **"rekordbox xml"** in the sidebar
 4. Right-click each playlist → **Import To Collection**
