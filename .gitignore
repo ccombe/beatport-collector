@@ -1,6 +1,9 @@
 # Environment
 .env
 
+# Status / session notes
+STATUS.md
+
 # Python
 __pycache__/
 *.py[cod]
