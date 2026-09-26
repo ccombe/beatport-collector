@@ -41,17 +41,80 @@ def split_mix(title: str) -> tuple[str, str]:
     return m.group("base").strip(), m.group("mix").strip()
 
 
-def clean_query(title: str) -> str:
+def clean_query(title: str, artist: str = "") -> str:
     """Strip promo junk for SEARCH ONLY (never writes this to the file).
 
     'Haze myfreemp3.vip' -> 'Haze'; 'Eastern Storm (Original Mix) 128'
-    -> 'Eastern Storm (Original Mix)'.
+    -> 'Eastern Storm (Original Mix)'; 'Josi Devil - Breathe Easy' with
+    artist 'Josi Devil' -> 'Breathe Easy'.
     """
     from beatport_collector.tagger import TRAILING_BPM_RE, URL_RE
 
     q = URL_RE.sub("", title).strip()
     q = TRAILING_BPM_RE.sub("", q).strip()
+    if artist:
+        prefix = artist.strip().lower()
+        if q.lower().startswith(prefix + " - ") or q.lower().startswith(
+            prefix + " \u2013 "
+        ):
+            q = q[len(prefix) + 3 :].strip()
     return q or title.strip()
+
+
+TRACK_NUM_RE = re.compile(r"^(\d{1,3}[-_.\s]+)+")
+BEATPORT_ID_RE = re.compile(r"^(\d{6,})[_.\s-]+(.+)$")
+
+JUNK_FOLDERS = {"unknownartist", "unknownalbum"}
+
+
+def guess_from_filename(path: str) -> tuple[str, str]:
+    """Fallback artist/title from 'Artist - Title.mp3' filenames.
+
+    Search-query use only: strips track numbers (04, 1-07.), the
+    extension, and splits on the first ' - '. Returns ('', '') when
+    the name carries no usable pair.
+    """
+    stem = os.path.splitext(os.path.basename(path))[0].strip()
+    stem = TRACK_NUM_RE.sub("", stem).strip()
+    if " - " not in stem:
+        return "", stem
+    artist, title = stem.split(" - ", 1)
+    artist, title = artist.strip(), title.strip()
+    if TRACK_NUM_RE.match(artist):
+        return "", title  # '03 - Fanfatas' -> title only, artist from folder
+    return artist, title
+
+
+def guess_from_folder(path: str, title: str) -> tuple[str, str]:
+    """Fallback artist from the parent folder ('Byen/03 - Fanfatas.wav').
+
+    Returns (artist, title); ('', title) when the folder is itself junk
+    (UnknownArtist, promo domains) and must not seed a search.
+    """
+    from beatport_collector.tagger import URL_RE
+
+    parent = os.path.basename(os.path.dirname(path))
+    if (
+        not parent
+        or parent.lower() in JUNK_FOLDERS
+        or URL_RE.search(parent)
+        or not title
+    ):
+        return "", title
+    return parent.strip(), title
+
+
+def guess_beatport_id(path: str) -> tuple[int, str]:
+    """Leading Beatport track id in filenames ('14365163_Title_Mix.wav').
+
+    Returns (track_id, remainder_title); (0, '') when absent.
+    """
+    stem = os.path.splitext(os.path.basename(path))[0].strip()
+    m = BEATPORT_ID_RE.match(stem)
+    if not m:
+        return 0, ""
+    remainder = TRACK_NUM_RE.sub("", m.group(2)).strip().replace("_", " ")
+    return int(m.group(1)), remainder
 
 
 def file_needs_enrichment(path: str) -> tuple[bool, list[str]]:
@@ -81,6 +144,8 @@ class EnrichResult:
     beatport_date: str = ""
     plan: dict | None = None
     applied: dict | None = None
+    source: str = "beatport"  # or "musicbrainz"
+    snapshot: dict[str, object] | None = None  # cached track, avoids re-fetch
 
 
 def _enrich_one(
@@ -111,9 +176,30 @@ def _enrich_one(
     cur = tagger.current_tags(path)
     artist, title = cur.get("artist", ""), cur.get("title", "")
     if not artist or not title:
-        return EnrichResult(path, artist, title, status="skipped")
-    base, mix = split_mix(clean_query(title))
+        guessed_artist, guessed_title = guess_from_filename(path)
+        if guessed_artist and guessed_title:
+            artist, title = guessed_artist, guessed_title
+        else:
+            # Title-only filename? The parent folder is often the artist.
+            folder_artist, folder_title = guess_from_folder(
+                path, guessed_title or title
+            )
+            if not folder_artist or not folder_title:
+                return EnrichResult(path, artist, title, status="skipped")
+            artist, title = folder_artist, folder_title
+    base, mix = split_mix(clean_query(title, artist))
     duration_ms = _file_duration_ms(path)
+    # Leading Beatport id? Fetch it directly (exact, one cheap call) and
+    # accept only when the duration also matches the file.
+    track_id, _ = guess_beatport_id(path)
+    direct: catalog_api.CatalogTrack | None = None
+    if track_id and duration_ms:
+        try:
+            fetched = catalog_api.fetch_track_detail(token, track_id)
+            if fetched.length_ms and abs(fetched.length_ms - duration_ms) <= 10000:
+                direct = fetched
+        except (requests.RequestException, RuntimeError, ValueError, KeyError) as e:
+            logger.warning("ID fetch failed for %s: %s", track_id, e)
     try:
         cands = catalog_api.search_tracks(
             token, artist, base, mix_name=mix, delay=delay
@@ -121,14 +207,52 @@ def _enrich_one(
         # Fallback: full cleaned title as name if mix-split found nothing.
         if not cands and mix:
             cands = catalog_api.search_tracks(
-                token, artist, clean_query(title), delay=delay
+                token, artist, clean_query(title, artist), delay=delay
             )
-        best, reason = catalog_api.pick_best(cands, duration_ms=duration_ms)
+        # Fallback: swapped roles — some files carry the artist in the
+        # title and vice versa ('Breathe Again' / 'Robert Owens … (Mix)').
+        # Duration gating still decides, so a wrong swap can't stick.
+        if not cands and title:
+            swap_base, swap_mix = split_mix(clean_query(title, artist))
+            cands = catalog_api.search_tracks(
+                token, swap_base, artist, mix_name=swap_mix, delay=delay
+            )
+        if direct is not None:
+            best, reason = direct, "match"
+        else:
+            best, reason = catalog_api.pick_best(cands, duration_ms=duration_ms)
     except (requests.RequestException, RuntimeError, ValueError, KeyError) as e:
         logger.warning("Search failed for %s - %s: %s", artist, title, e)
         return EnrichResult(path, artist, title, status="error")
     if not best:
-        return EnrichResult(path, artist, title, status=reason)
+        # Beatport came up empty — try MusicBrainz (release/date/label
+        # only; never genre/BPM/key). Score + artist gates inside.
+        from beatport_collector import musicbrainz
+
+        mb = musicbrainz.search_recording(artist, title, duration_ms=duration_ms)
+        if mb is None or not (mb.release or mb.date or mb.label):
+            return EnrichResult(path, artist, title, status=reason)
+        mb_track = catalog_api.CatalogTrack(
+            id=0,
+            name=mb.title or title,
+            artists=mb.artist or artist,
+            release_name=mb.release,
+            publish_date=mb.date,
+            label=mb.label,
+        )
+        mb_result = apply_match(
+            path,
+            artist,
+            title,
+            mb_track,
+            dry_run=dry_run,
+            overwrite=overwrite,
+            art_overwrite=art_overwrite,
+        )
+        mb_result.source = "musicbrainz"
+        mb_result.snapshot = mb_track.to_cache()
+        mb_result.beatport_date = mb.date
+        return mb_result
     bp_tags = best.to_tag_updates()
     plan = tagger.plan_updates(
         path,

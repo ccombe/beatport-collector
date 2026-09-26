@@ -48,7 +48,7 @@ def load_matched(match_jsonl: str) -> list[dict[str, Any]]:
             if (
                 isinstance(row, dict)
                 and row.get("status") == "matched"
-                and row.get("beatport_id")
+                and (row.get("beatport_id") or row.get("snapshot"))
             ):
                 rows.append(row)
     return rows
@@ -122,11 +122,15 @@ def _apply_one(
     beatport_id: int,
     cache: dict[str, dict[str, object]],
     art_overwrite: bool,
+    snapshot: dict[str, object] | None = None,
 ) -> EnrichResult:
-    snap = cache.get(str(beatport_id))
-    if snap is None:
-        return EnrichResult(path, "", "", status="error")
-    best = catalog_api.CatalogTrack.from_cache(snap)
+    if snapshot is not None:
+        best = catalog_api.CatalogTrack.from_cache(snapshot)
+    else:
+        snap = cache.get(str(beatport_id))
+        if snap is None:
+            return EnrichResult(path, "", "", status="error")
+        best = catalog_api.CatalogTrack.from_cache(snap)
     cur = current_tags(path)
     return apply_match(
         path,
@@ -159,11 +163,13 @@ def run(
     done = load_done(progress_path)
     if apply_tags:
         todo = [
-            m for m in manifest if m.get("path") not in done and m.get("beatport_id")
+            m
+            for m in manifest
+            if m.get("path") not in done and (m.get("beatport_id") or m.get("snapshot"))
         ]
         cache = fetch_details_cached(
             token,
-            [int(m["beatport_id"]) for m in todo],
+            [int(m["beatport_id"]) for m in todo if m.get("beatport_id")],
             cache_path,
             delay=1.0,
             workers=workers,
@@ -194,6 +200,8 @@ def run(
                 "status": r.status,
                 "beatport_id": r.beatport_id,
                 "applied": r.applied,
+                "source": r.source,
+                "snapshot": r.snapshot,
             },
         )
         if progress_cb is not None:
@@ -216,9 +224,10 @@ def run(
             pool.submit(
                 _apply_one,
                 str(m["path"]),
-                int(m["beatport_id"]),
+                int(m.get("beatport_id") or 0),
                 cache,
                 art_overwrite,
+                m.get("snapshot") if isinstance(m.get("snapshot"), dict) else None,
             ): m
             for m in todo
         }

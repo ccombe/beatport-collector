@@ -265,6 +265,115 @@ class TestOtherBackends:
         assert backend_for("x.ogg") is None
 
 
+class TestFilenameFallback:
+    def test_artist_title(self) -> None:
+        assert enrich.guess_from_filename("/m/Afriqua - Moonspa (Preesh Edit).wav") == (
+            "Afriqua",
+            "Moonspa (Preesh Edit)",
+        )
+
+    def test_track_numbers_stripped(self) -> None:
+        assert enrich.guess_from_filename("/m/1-07. Bongo Entp. - Drømmen.flac") == (
+            "Bongo Entp.",
+            "Drømmen",
+        )
+
+    def test_no_separator_returns_title_only(self) -> None:
+        assert enrich.guess_from_filename("/m/JustATrack.mp3") == ("", "JustATrack")
+
+    def test_numeric_artist_becomes_title_only(self) -> None:
+        assert enrich.guess_from_filename("/m/Byen/03 - Fanfatas.wav") == (
+            "",
+            "Fanfatas",
+        )
+
+    def test_folder_artist(self) -> None:
+        assert enrich.guess_from_folder("/m/Byen/03 - Fanfatas.wav", "Fanfatas") == (
+            "Byen",
+            "Fanfatas",
+        )
+
+    def test_folder_junk_rejected(self) -> None:
+        assert enrich.guess_from_folder("/m/UnknownArtist/x.mp3", "X") == ("", "X")
+        assert enrich.guess_from_folder("/m/www.electronicfresh.com/x.mp3", "X") == (
+            "",
+            "X",
+        )
+
+    def test_beatport_id(self) -> None:
+        tid, rest = enrich.guess_beatport_id(
+            "/m/14365163_Watch_Where_You_Walk_Original_Mix.wav"
+        )
+        assert tid == 14365163
+        assert "Watch" in rest
+
+    def test_beatport_id_absent(self) -> None:
+        assert enrich.guess_beatport_id("/m/04 Slip.m4a") == (0, "")
+
+
+class TestMusicBrainzFallback:
+    @staticmethod
+    def _rec(score=100, artist="Honey", length=200000):
+        return {
+            "id": "abc",
+            "title": "Honey",
+            "score": str(score),
+            "artist-credit": [{"name": artist}],
+            "length": str(length),
+            "releases": [
+                {"title": "Some Release", "date": "2020-01-01", "label-info": []}
+            ],
+        }
+
+    def test_accepts_scored_duration_match(self, monkeypatch) -> None:
+        from beatport_collector import musicbrainz
+
+        monkeypatch.setattr(
+            musicbrainz,
+            "_polite_get",
+            lambda url: {"recordings": [self._rec()]},
+        )
+        m = musicbrainz.search_recording("Honey", "Honey", duration_ms=200000)
+        assert m is not None
+        assert m.release == "Some Release"
+
+    def test_rejects_duration_mismatch(self, monkeypatch) -> None:
+        from beatport_collector import musicbrainz
+
+        monkeypatch.setattr(
+            musicbrainz,
+            "_polite_get",
+            lambda url: {"recordings": [self._rec(length=600000)]},
+        )
+        assert (
+            musicbrainz.search_recording("Honey", "Honey", duration_ms=200000) is None
+        )
+
+    def test_rejects_low_score(self, monkeypatch) -> None:
+        from beatport_collector import musicbrainz
+
+        monkeypatch.setattr(
+            musicbrainz,
+            "_polite_get",
+            lambda url: {"recordings": [self._rec(score=40)]},
+        )
+        assert musicbrainz.search_recording("Honey", "Honey") is None
+
+
+class TestCleanQuery:
+    def test_strips_duplicated_artist(self) -> None:
+        assert (
+            enrich.clean_query("Josi Devil - Breathe Easy", "Josi Devil")
+            == "Breathe Easy"
+        )
+
+    def test_leaves_other_titles(self) -> None:
+        assert (
+            enrich.clean_query("Mover (Extended Mix)", "Audiojack")
+            == "Mover (Extended Mix)"
+        )
+
+
 class TestTaggerSafety:
     # Synthetic fixtures only (no dependency on library state): tag-only
     # files exercise the ID3 fallback reader.
