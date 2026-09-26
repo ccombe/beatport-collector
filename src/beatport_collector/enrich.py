@@ -334,14 +334,20 @@ def enrich_many(
     raising workers speeds up local tag I/O, not API pressure. Results
     stream to *progress_cb* as they complete (bounded memory: callers
     should log, not accumulate). Returns results in completion order.
-    """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
 
+    Watchdog: any future still pending STUCK_AFTER seconds is logged as a
+    stuck error and abandoned (its thread leaks, bounded by poison-file
+    count — usually DNS/driver hangs with no timeout of their own).
+    """
+    import time
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+
+    STUCK_AFTER = 300.0
     total = len(paths)
     done = 0
     out: list[EnrichResult] = []
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        futs = {
+        pending = {
             pool.submit(
                 _enrich_one,
                 token,
@@ -350,21 +356,36 @@ def enrich_many(
                 overwrite,
                 art_overwrite,
                 delay,
-            ): p
+            ): (p, time.monotonic())
             for p in paths
         }
-        for fut in as_completed(futs):
-            done += 1
-            try:
-                r = fut.result()
-            except Exception as e:  # noqa: BLE001 - one bad file must not kill the batch
-                logger.warning("Worker failed for %s: %s", futs[fut], e)
-                continue
-            if r is None:
-                continue
-            out.append(r)
-            if progress_cb is not None:
-                progress_cb(r, done, total)
+        while pending:
+            done_set, _ = wait(set(pending), timeout=30.0, return_when=FIRST_COMPLETED)
+            now = time.monotonic()
+            for fut in list(done_set):
+                path, _ = pending.pop(fut)
+                done += 1
+                try:
+                    r = fut.result()
+                except Exception as e:  # noqa: BLE001 - one bad file must not kill the batch
+                    logger.warning("Worker failed for %s: %s", path, e)
+                    continue
+                if r is None:
+                    continue
+                out.append(r)
+                if progress_cb is not None:
+                    progress_cb(r, done, total)
+            for fut, (path, born) in list(pending.items()):
+                if now - born > STUCK_AFTER:
+                    logger.warning(
+                        "Stuck file abandoned after %.0fs: %s", now - born, path
+                    )
+                    stuck = EnrichResult(path, "", "", status="stuck")
+                    pending.pop(fut)
+                    done += 1
+                    out.append(stuck)
+                    if progress_cb is not None:
+                        progress_cb(stuck, done, total)
     return out
 
 

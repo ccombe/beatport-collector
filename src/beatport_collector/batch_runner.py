@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import logging
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from beatport_collector import catalog_api
@@ -231,10 +231,30 @@ def run(
             ): m
             for m in todo
         }
-        for fut in as_completed(futs):
+    import time
+    from concurrent.futures import FIRST_COMPLETED, wait
+
+    STUCK_AFTER = 300.0
+    pending = dict(futs)
+    born = {fut: time.monotonic() for fut in pending}
+    while pending:
+        done_set, _ = wait(set(pending), timeout=30.0, return_when=FIRST_COMPLETED)
+        for fut in list(done_set):
+            m = pending.pop(fut)
+            born.pop(fut, None)
             try:
                 _report(fut.result())
             except Exception as e:  # noqa: BLE001 - one bad file must not kill the batch
                 logger.warning("Apply failed: %s", e)
                 counts["error"] += 1
+        now = time.monotonic()
+        for fut, m in list(pending.items()):
+            if now - born.get(fut, now) > STUCK_AFTER:
+                logger.warning(
+                    "Stuck apply abandoned after %.0fs: %s",
+                    now - born[fut],
+                    m.get("path"),
+                )
+                pending.pop(fut)
+                counts["stuck"] += 1
     return counts
