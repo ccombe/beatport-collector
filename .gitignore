@@ -12,8 +12,10 @@ build/
 dist/
 wheels/
 
-# Virtual environment
+# Virtual environments (per-platform: .venv on Windows, .venv-wsl on WSL —
+# set UV_PROJECT_ENVIRONMENT=.venv-wsl on Linux so the two never clash)
 .venv
+.venv-*
 
 # Beatport session (no longer used, legacy)
 beatport_session.json

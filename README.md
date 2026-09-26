@@ -29,9 +29,21 @@ Auth flow (inspired by the
 No browser automation, no Cloudflare issues — just direct HTTP with
 `requests.Session()`.
 
-## Setup
+## Setup (cross-platform)
+
+One checkout works from both Windows and WSL — each side keeps its own
+venv so they never clobber each other:
 
 ```powershell
+# Windows PowerShell (uses .venv)
+cd C:\Users\chris\Code\beatport-collector
+uv sync
+```
+
+```bash
+# WSL Ubuntu (uses .venv-wsl via UV_PROJECT_ENVIRONMENT)
+export UV_PROJECT_ENVIRONMENT=.venv-wsl  # also in ~/.bashrc
+cd /mnt/c/Users/chris/Code/beatport-collector
 uv sync
 ```
 
