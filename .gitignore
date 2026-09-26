@@ -43,3 +43,7 @@ music_catalog.db-wal
 sparse_*.json
 track_cache*.json
 *_progress.jsonl
+
+# Live run logs + per-run manifests
+sparse_gdrive_*.json*
+gdrive_live.log
