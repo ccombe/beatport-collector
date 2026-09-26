@@ -346,24 +346,27 @@ def enrich_many(
     total = len(paths)
     done = 0
     out: list[EnrichResult] = []
+    started: dict[str, float] = {}
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        pending = {
-            pool.submit(
-                _enrich_one,
+
+        def _run(path: str) -> EnrichResult | None:
+            started[path] = time.monotonic()
+            return _enrich_one(
                 token,
-                p,
-                dry_run,
-                overwrite,
-                art_overwrite,
-                delay,
-            ): (p, time.monotonic())
-            for p in paths
-        }
+                path,
+                dry_run=dry_run,
+                overwrite=overwrite,
+                art_overwrite=art_overwrite,
+                delay=delay,
+            )
+
+        pending = {pool.submit(_run, p): (p, time.monotonic()) for p in paths}
         while pending:
             done_set, _ = wait(set(pending), timeout=30.0, return_when=FIRST_COMPLETED)
             now = time.monotonic()
             for fut in list(done_set):
                 path, _ = pending.pop(fut)
+                started.pop(path, None)
                 done += 1
                 try:
                     r = fut.result()
@@ -375,13 +378,20 @@ def enrich_many(
                 out.append(r)
                 if progress_cb is not None:
                     progress_cb(r, done, total)
-            for fut, (path, born) in list(pending.items()):
-                if now - born > STUCK_AFTER:
+            for fut, (path, _born) in list(pending.items()):
+                # Age only from actual start: queued files refresh their
+                # timestamp each sweep and can never false-trigger.
+                birth = started.get(path)
+                if birth is None:
+                    pending[fut] = (path, now)
+                    continue
+                if now - birth > STUCK_AFTER:
                     logger.warning(
-                        "Stuck file abandoned after %.0fs: %s", now - born, path
+                        "Stuck file abandoned after %.0fs: %s", now - birth, path
                     )
                     stuck = EnrichResult(path, "", "", status="stuck")
                     pending.pop(fut)
+                    started.pop(path, None)
                     done += 1
                     out.append(stuck)
                     if progress_cb is not None:

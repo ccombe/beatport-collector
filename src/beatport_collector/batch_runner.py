@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -180,32 +181,36 @@ def run(
     total = len(todo)
     counts: Counter[str] = Counter()
     n_done = 0
+    report_lock = threading.Lock()
 
     def _report(r: EnrichResult) -> None:
-        nonlocal n_done
-        n_done += 1
-        if r.status == "matched" and r.applied is not None:
-            key = (
-                "updated"
-                if (r.applied.get("updated") or r.applied.get("artwork_embedded"))
-                else "matched"
+        # Thread-safe: also called directly from worker threads.
+        with report_lock:
+            nonlocal n_done
+            n_done += 1
+            if r.status == "matched" and r.applied is not None:
+                key = (
+                    "updated"
+                    if (r.applied.get("updated") or r.applied.get("artwork_embedded"))
+                    else "matched"
+                )
+            else:
+                key = r.status
+            counts[key] += 1
+            append_result(
+                progress_path,
+                {
+                    "path": r.path,
+                    "status": r.status,
+                    "beatport_id": r.beatport_id,
+                    "applied": r.applied,
+                    "source": r.source,
+                    "snapshot": r.snapshot,
+                },
             )
-        else:
-            key = r.status
-        counts[key] += 1
-        append_result(
-            progress_path,
-            {
-                "path": r.path,
-                "status": r.status,
-                "beatport_id": r.beatport_id,
-                "applied": r.applied,
-                "source": r.source,
-                "snapshot": r.snapshot,
-            },
-        )
+            snapshot_n = n_done
         if progress_cb is not None:
-            progress_cb(r, n_done, total)
+            progress_cb(r, snapshot_n, total)
 
     if not apply_tags:
         for r in enrich_many(
@@ -219,42 +224,50 @@ def run(
             pass
         return counts
 
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futs = {
-            pool.submit(
-                _apply_one,
+    import time
+    from concurrent.futures import FIRST_COMPLETED, wait
+
+    STUCK_AFTER = 300.0
+    started: dict[str, float] = {}
+
+    def _run_apply(m: dict) -> None:
+        started[str(m.get("path"))] = time.monotonic()
+        _report(
+            _apply_one(
                 str(m["path"]),
                 int(m.get("beatport_id") or 0),
                 cache,
                 art_overwrite,
                 m.get("snapshot") if isinstance(m.get("snapshot"), dict) else None,
-            ): m
-            for m in todo
-        }
-    import time
-    from concurrent.futures import FIRST_COMPLETED, wait
+            )
+        )
 
-    STUCK_AFTER = 300.0
-    pending = dict(futs)
-    born = {fut: time.monotonic() for fut in pending}
-    while pending:
-        done_set, _ = wait(set(pending), timeout=30.0, return_when=FIRST_COMPLETED)
-        for fut in list(done_set):
-            m = pending.pop(fut)
-            born.pop(fut, None)
-            try:
-                _report(fut.result())
-            except Exception as e:  # noqa: BLE001 - one bad file must not kill the batch
-                logger.warning("Apply failed: %s", e)
-                counts["error"] += 1
-        now = time.monotonic()
-        for fut, m in list(pending.items()):
-            if now - born.get(fut, now) > STUCK_AFTER:
-                logger.warning(
-                    "Stuck apply abandoned after %.0fs: %s",
-                    now - born[fut],
-                    m.get("path"),
-                )
-                pending.pop(fut)
-                counts["stuck"] += 1
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        pending = {pool.submit(_run_apply, m): m for m in todo}
+        while pending:
+            done_set, _ = wait(set(pending), timeout=30.0, return_when=FIRST_COMPLETED)
+            for fut in list(done_set):
+                m = pending.pop(fut)
+                started.pop(str(m.get("path")), None)
+                try:
+                    fut.result()
+                except Exception as e:  # noqa: BLE001 - one bad file must not kill the batch
+                    logger.warning("Apply failed: %s", e)
+                    counts["error"] += 1
+            now = time.monotonic()
+            for fut, m in list(pending.items()):
+                # Only genuinely running files age out; queued ones have
+                # no start stamp yet and are never false-triggered.
+                birth = started.get(str(m.get("path")))
+                if birth is None:
+                    continue
+                if now - birth > STUCK_AFTER:
+                    logger.warning(
+                        "Stuck apply abandoned after %.0fs: %s",
+                        now - birth,
+                        m.get("path"),
+                    )
+                    pending.pop(fut)
+                    started.pop(str(m.get("path")), None)
+                    counts["stuck"] += 1
     return counts
