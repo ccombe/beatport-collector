@@ -30,6 +30,8 @@ archive/
 
 # Music catalog (rebuilt from scratch each scan)
 music_catalog.db
+music_catalog.db-shm
+music_catalog.db-wal
 
 # IDE
 .vscode/
