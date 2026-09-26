@@ -442,7 +442,7 @@ def main() -> None:
         "--workers",
         type=int,
         default=4,
-        help="Parallel worker threads (max 4 recommended; API stays polite via shared gate)",
+        help="Parallel worker threads (up to 10; API stays polite via shared gate)",
     )
     batch_parser.add_argument("--username", default=None)
     batch_parser.add_argument("--password", default=None)
@@ -483,7 +483,7 @@ def main() -> None:
         "--workers",
         type=int,
         default=4,
-        help="Parallel worker threads (max 4 recommended)",
+        help="Parallel worker threads (up to 10)",
     )
     apply_parser.add_argument("--username", default=None)
     apply_parser.add_argument("--password", default=None)

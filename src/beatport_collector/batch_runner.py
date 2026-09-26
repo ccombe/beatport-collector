@@ -159,7 +159,7 @@ def run(
     cached track details (fetched once per unique id) and writes with
     verify-then-replace. Already-logged paths are skipped.
     """
-    workers = max(1, min(workers, 4))
+    workers = max(1, min(workers, 10))
     done = load_done(progress_path)
     if apply_tags:
         todo = [
