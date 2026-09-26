@@ -214,6 +214,14 @@ def _get_token(args: Any) -> str:
     return oauth_login(username, password).access_token
 
 
+def _safe_print(msg: str) -> None:
+    """Print that can never kill a run (cp1252 consoles choke on glyphs)."""
+    try:
+        print(msg, flush=True)
+    except UnicodeEncodeError:
+        print(msg.encode("ascii", "replace").decode("ascii"), flush=True)
+
+
 def _progress_printer(t0: float, total: int):
     """DJ-booth progress view: bar, VU, spinner, now-spinning line.
 
@@ -249,18 +257,17 @@ def _progress_printer(t0: float, total: int):
             pct = 100 * n / max(t, 1)
             vu = VU[min(int(pct / 100 * (len(VU) - 1)), len(VU) - 1)]
             glyph = spin[(n // 10) % len(spin)]
-            print(
+            _safe_print(
                 f"  {glyph} ♪ {bar(n, t)} {n}/{t} ({pct:.0f}%) {vu} "
                 f"updated={state['updated']} matched={counts['matched']} "
                 f"ambig={counts['ambiguous']} nomatch={counts['no-candidates']} "
                 f"skip={counts['skipped']} err={counts['error']} "
-                f"| {el / 60:.0f}m in ~{eta / 60:.0f}m left",
-                flush=True,
+                f"| {el / 60:.0f}m in ~{eta / 60:.0f}m left"
             )
             if state["last_spin"]:
                 last = state["last_spin"]
                 assert isinstance(last, str)
-                print(f"    now spinning: {last[:90]}", flush=True)
+                _safe_print(f"    now spinning: {last[:90]}")
 
     return cb, state
 
@@ -620,14 +627,14 @@ def main() -> None:
         )
         for r in results:
             if r.status == "matched" and r.plan:
-                print(
+                _safe_print(
                     f"  MATCH {r.artist} - {r.title} -> id={r.beatport_id} date={r.beatport_date}"
                 )
                 print(f"    updates={r.plan.get('updates')}")
                 if r.applied:
                     print(f"    applied={r.applied}")
             else:
-                print(f"  {r.status.upper()} {r.artist} - {r.title} ({r.path})")
+                _safe_print(f"  {r.status.upper()} {r.artist} - {r.title} ({r.path})")
 
     elif args.command == "batch":
         import time
