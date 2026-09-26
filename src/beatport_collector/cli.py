@@ -430,6 +430,26 @@ def main() -> None:
         "--apply", action="store_true", help="Write tags (default is dry-run)"
     )
     batch_parser.add_argument(
+        "--apply-now",
+        action="store_true",
+        help=(
+            "Streaming: look up, match and write each file in turn, so the "
+            "first file is tagged as soon as it resolves (no analysis phase)"
+        ),
+    )
+    batch_parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=50,
+        help="Files per commit; bounds how much a crash can cost (0 = all)",
+    )
+    batch_parser.add_argument(
+        "--max-failures",
+        type=int,
+        default=15,
+        help="Stop after this many consecutive failures (circuit breaker)",
+    )
+    batch_parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Overwrite existing tags (never artwork)",
@@ -657,12 +677,21 @@ def main() -> None:
             workers=args.workers,
             art_overwrite=args.art_overwrite,
             progress_cb=cb,
+            apply_now=args.apply_now,
+            chunk_size=args.chunk_size if args.chunk_size > 0 else 10**9,
+            max_consecutive_failures=args.max_failures,
         )
         el = time.monotonic() - t0
         print(
             f"  DONE {total} files in {el / 60:.1f}m: "
             f"updated={state['updated']} {dict(counts)}"
         )
+        if counts.get("stopped-early"):
+            print(
+                "  STOPPED EARLY: too many consecutive failures. "
+                f"Fix the cause, then rerun the same command to resume from "
+                f"{args.progress}."
+            )
 
     elif args.command == "apply":
         import time

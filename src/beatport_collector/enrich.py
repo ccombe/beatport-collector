@@ -149,6 +149,71 @@ class EnrichResult:
     snapshot: dict[str, object] | None = None  # cached track, avoids re-fetch
 
 
+def _fetch_direct(
+    token: str, track_id: int, duration_ms: int | None
+) -> catalog_api.CatalogTrack | None:
+    """Fetch a track by an id embedded in the filename, duration-gated.
+
+    Exact and cheap when the filename carries a Beatport id, but trusted
+    only if the length agrees with the file — a stale id must not stick.
+    """
+    if not track_id or not duration_ms:
+        return None
+    try:
+        fetched = catalog_api.fetch_track_detail(token, track_id)
+    except (requests.RequestException, RuntimeError, ValueError, KeyError) as e:
+        logger.warning("ID fetch failed for %s: %s", track_id, e)
+        return None
+    if fetched.length_ms and abs(fetched.length_ms - duration_ms) <= 10000:
+        return fetched
+    return None
+
+
+def _resolve_identity(path: str, cur: dict[str, str]) -> tuple[str, str] | None:
+    """Artist/title to search with, or None if we cannot tell.
+
+    Prefers what the file already says, then the filename, then the parent
+    folder (often the artist for title-only filenames).
+    """
+    artist, title = cur.get("artist", ""), cur.get("title", "")
+    if artist and title:
+        return artist, title
+    guessed_artist, guessed_title = guess_from_filename(path)
+    if guessed_artist and guessed_title:
+        return guessed_artist, guessed_title
+    folder_artist, folder_title = guess_from_folder(path, guessed_title or title)
+    if not folder_artist or not folder_title:
+        return None
+    return folder_artist, folder_title
+
+
+def _search_candidates(
+    token: str,
+    artist: str,
+    title: str,
+    base: str,
+    mix: str,
+    delay: float,
+) -> list[catalog_api.CatalogTrack]:
+    """Search, then retry with the full title, then with roles swapped.
+
+    The swap covers files that carry the artist in the title and vice
+    versa. Duration gating downstream means a wrong guess cannot stick.
+    """
+    cands = catalog_api.search_tracks(token, artist, base, mix_name=mix, delay=delay)
+    if cands or not mix:
+        return cands
+    cands = catalog_api.search_tracks(
+        token, artist, clean_query(title, artist), delay=delay
+    )
+    if cands or not title:
+        return cands
+    swap_base, swap_mix = split_mix(clean_query(title, artist))
+    return catalog_api.search_tracks(
+        token, swap_base, artist, mix_name=swap_mix, delay=delay
+    )
+
+
 def _enrich_one(
     token: str,
     raw_path: str,
@@ -176,49 +241,20 @@ def _enrich_one(
     if not needs:
         return None
     cur = tagger.current_tags(path)
-    artist, title = cur.get("artist", ""), cur.get("title", "")
-    if not artist or not title:
-        guessed_artist, guessed_title = guess_from_filename(path)
-        if guessed_artist and guessed_title:
-            artist, title = guessed_artist, guessed_title
-        else:
-            # Title-only filename? The parent folder is often the artist.
-            folder_artist, folder_title = guess_from_folder(
-                path, guessed_title or title
-            )
-            if not folder_artist or not folder_title:
-                return EnrichResult(path, artist, title, status="skipped")
-            artist, title = folder_artist, folder_title
+    identity = _resolve_identity(path, cur)
+    if identity is None:
+        return EnrichResult(
+            path, cur.get("artist", ""), cur.get("title", ""), status="skipped"
+        )
+    artist, title = identity
     base, mix = split_mix(clean_query(title, artist))
     duration_ms = _file_duration_ms(path)
     # Leading Beatport id? Fetch it directly (exact, one cheap call) and
     # accept only when the duration also matches the file.
     track_id, _ = guess_beatport_id(path)
-    direct: catalog_api.CatalogTrack | None = None
-    if track_id and duration_ms:
-        try:
-            fetched = catalog_api.fetch_track_detail(token, track_id)
-            if fetched.length_ms and abs(fetched.length_ms - duration_ms) <= 10000:
-                direct = fetched
-        except (requests.RequestException, RuntimeError, ValueError, KeyError) as e:
-            logger.warning("ID fetch failed for %s: %s", track_id, e)
+    direct = _fetch_direct(token, track_id, duration_ms)
     try:
-        cands = catalog_api.search_tracks(
-            token, artist, base, mix_name=mix, delay=delay
-        )
-        # Fallback: full cleaned title as name if mix-split found nothing.
-        if not cands and mix:
-            cands = catalog_api.search_tracks(
-                token, artist, clean_query(title, artist), delay=delay
-            )
-        # Fallback: swapped roles — some files carry the artist in the
-        # title and vice versa ('Breathe Again' / 'Robert Owens … (Mix)').
-        # Duration gating still decides, so a wrong swap can't stick.
-        if not cands and title:
-            swap_base, swap_mix = split_mix(clean_query(title, artist))
-            cands = catalog_api.search_tracks(
-                token, swap_base, artist, mix_name=swap_mix, delay=delay
-            )
+        cands = _search_candidates(token, artist, title, base, mix, delay)
         if direct is not None:
             best, reason = direct, "match"
         else:
@@ -275,7 +311,7 @@ def _enrich_one(
             plan=report,
         )
     applied = tagger.apply_plan(plan, dry_run=False)
-    return EnrichResult(
+    result = EnrichResult(
         path,
         artist,
         title,
@@ -284,6 +320,32 @@ def _enrich_one(
         beatport_date=best.publish_date,
         plan=tagger.apply_plan(plan, dry_run=True),
         applied=applied,
+    )
+    if applied.get("error"):
+        # A refused write (verify failed, original untouched) must not be
+        # filed under "matched", or the file silently never gets enriched.
+        result.status = "verify-failed"
+    return result
+
+
+def enrich_one(
+    token: str,
+    path: str,
+    dry_run: bool = True,
+    art_overwrite: bool = False,
+    delay: float = catalog_api.SEARCH_DELAY_SECONDS,
+) -> EnrichResult | None:
+    """Look up, match and (unless *dry_run*) write a single file.
+
+    The streaming unit of work: one call per file, so a caller can commit
+    each result as it lands instead of waiting for a whole phase.
+    """
+    return _enrich_one(
+        token,
+        path,
+        dry_run=dry_run,
+        art_overwrite=art_overwrite,
+        delay=delay,
     )
 
 

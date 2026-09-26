@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import ClassVar, Protocol
+from typing import Any, ClassVar, Protocol
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +73,17 @@ class TagBackend(Protocol):
         """Fid prefix for front art this backend may swap, else None."""
         ...
 
+    @property
+    def repairs_dropped_frames(self) -> bool:
+        """True when writing at the preferred revision can drop frames the
+        source had, and ``restore_frames`` can put them back. Adapters that
+        never lose frames leave this False."""
+        ...
+
+    def restore_frames(self, path: str, frame_ids: list[str]) -> None:
+        """Re-save at the source revision so *frame_ids* survive. No-op by default."""
+        ...
+
 
 class ID3Backend:
     """Adapter: ID3v2.3 containers (MP3, WAV, AIFF/AIF)."""
@@ -91,6 +102,9 @@ class ID3Backend:
         "isrc": "TSRC",
     }
     _PROVENANCE = "TXXX:BEATPORT_ENRICHED"
+    #: Saving at v2.3 can drop frames a v2.4 source had; we repair rather
+    #: than lose data, so the tagger may call restore_frames().
+    repairs_dropped_frames = True
 
     def _load(self, path: str):
         from mutagen.id3 import ID3, ID3NoHeaderError
@@ -126,33 +140,11 @@ class ID3Backend:
     def write_updates(
         self, path: str, updates: dict[str, str], overwrite: bool
     ) -> None:
-        from mutagen.id3 import (
-            ID3,
-            TALB,
-            TBPM,
-            TCON,
-            TDRC,
-            TIT2,
-            TKEY,
-            TPE1,
-            TPUB,
-            TSRC,
-            TXXX,
-        )
+        from mutagen.id3 import ID3, TXXX
 
         from beatport_collector.tagger import is_junk_value
 
-        classes = {
-            "artist": TPE1,
-            "title": TIT2,
-            "album": TALB,
-            "genre": TCON,
-            "date": TDRC,
-            "bpm": TBPM,
-            "key": TKEY,
-            "label": TPUB,
-            "isrc": TSRC,
-        }
+        classes = self._classes()
         tags = self._load(path) or ID3()
         for key, val in updates.items():
             fid, cls = self._MAP[key], classes[key]
@@ -165,6 +157,44 @@ class ID3Backend:
         tags.delall(self._PROVENANCE)
         tags.add(TXXX(encoding=3, desc="BEATPORT_ENRICHED", text="1"))
         tags.save(path, v2_version=3)
+
+    def _classes(self) -> dict[str, Any]:
+        from mutagen.id3 import (
+            TALB,
+            TBPM,
+            TCON,
+            TDRC,
+            TIT2,
+            TKEY,
+            TPE1,
+            TPUB,
+            TSRC,
+        )
+
+        return {
+            "artist": TPE1,
+            "title": TIT2,
+            "album": TALB,
+            "genre": TCON,
+            "date": TDRC,
+            "bpm": TBPM,
+            "key": TKEY,
+            "label": TPUB,
+            "isrc": TSRC,
+        }
+
+    def restore_frames(self, path: str, frame_ids: list[str]) -> None:
+        """Re-save at the file's own revision, rebuilding dropped frames.
+
+        The temp copy is the only copy, so the frames are rebuilt from the
+        ID3 payload still on disk: a v2.3 read parses the dropped v2.4 frame
+        back into memory, we simply write the result out at v2.4 instead of
+        v2.3. Nothing is invented and the audio stream is never touched.
+        """
+        from mutagen.id3 import ID3
+
+        tags = ID3(path)
+        tags.save(path, v2_version=4)
 
     def write_artwork(self, path: str, data: bytes, mime: str, replace: bool) -> bool:
         from mutagen.id3 import APIC
@@ -198,6 +228,8 @@ class VorbisBackend:
     """Adapter: Vorbis comments (FLAC). Label lives in organization."""
 
     extensions = (".flac",)
+    # Comments have no revision, so a write can never drop a key.
+    repairs_dropped_frames = False
 
     _MAP: ClassVar[dict[str, str]] = {
         "artist": "artist",
@@ -286,11 +318,17 @@ class VorbisBackend:
     def replaceable_art_prefix(self) -> str | None:
         return None
 
+    def restore_frames(self, path: str, frame_ids: list[str]) -> None:
+        """Vorbis comments have no revision, so nothing can be dropped."""
+        return
+
 
 class MP4Backend:
     """Adapter: MP4 atoms (M4A). Freeform atoms carry key/label/isrc."""
 
     extensions = (".m4a",)
+    # Atoms are revision-agnostic, so a write can never drop one.
+    repairs_dropped_frames = False
 
     _MAP: ClassVar[dict[str, str]] = {
         "title": "©nam",
@@ -400,6 +438,10 @@ class MP4Backend:
 
     def replaceable_art_prefix(self) -> str | None:
         return None
+
+    def restore_frames(self, path: str, frame_ids: list[str]) -> None:
+        """MP4 atoms are revision-agnostic, so nothing can be dropped."""
+        return
 
 
 BACKENDS: dict[str, TagBackend] = {}

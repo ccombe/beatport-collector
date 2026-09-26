@@ -77,7 +77,7 @@ class CatalogTrack:
             if dyn:
                 art = dyn.replace("{w}", "500").replace("{h}", "500")
                 break
-            elif img.get("uri"):
+            if img.get("uri"):
                 art = img["uri"]
                 break
         key = (data.get("key") or {}).get("name", "")

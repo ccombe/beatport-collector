@@ -38,7 +38,7 @@ from typing import Any
 
 from mutagen.mp3 import MP3
 
-from beatport_collector.backends import BACKENDS, backend_for
+from beatport_collector.backends import BACKENDS, TagBackend, backend_for
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +107,113 @@ class TagPlan:
     reason: str = ""
     overwrite: bool = False
     art_overwrite: bool = False
+
+
+def _restore_dropped_frames(
+    adapter: TagBackend, path: str, pre_ids: set[str]
+) -> list[str]:
+    """Undo a lossy tag-version downgrade, keeping the data.
+
+    We prefer ID3v2.3 for tool compatibility, but if writing at that
+    revision drops frames the source already had (e.g. a v2.4-only frame),
+    the file is re-saved at its original revision so nothing is lost. Only
+    the ID3 backend can lose frames this way, so it opts in.
+    """
+    if not getattr(adapter, "repairs_dropped_frames", False):
+        return []
+    try:
+        post_ids, _ = adapter.post_ids(path)
+    except Exception:  # noqa: BLE001 - let the normal verify report it
+        return []
+    dropped = sorted(pre_ids - post_ids)
+    if not dropped:
+        return []
+    try:
+        adapter.restore_frames(path, dropped)
+    except Exception as e:  # noqa: BLE001 - verify will refuse; nothing lost yet
+        logger.warning("Could not restore dropped frames in %s: %s", path, e)
+        return []
+    logger.info("Restored %d dropped frame(s) in %s: %s", len(dropped), path, dropped)
+    return dropped
+
+
+@dataclass(frozen=True)
+class _VerifyResult:
+    """Verdict on a temp copy: did the write land intact?"""
+
+    ok: bool
+    lost: frozenset[str] = frozenset()
+    audio_ok: bool = True
+
+
+def _post_ids(adapter: TagBackend, path: str) -> tuple[set[str], int]:
+    """(frame ids, picture count) for *path*; empty if unreadable.
+
+    The port must stay total: a backend that cannot answer is treated as
+    having nothing, which makes verification fail loudly rather than pass.
+    """
+    try:
+        return adapter.post_ids(path)
+    except Exception:  # noqa: BLE001
+        return set(), 0
+
+
+def _port_value(adapter: TagBackend, name: str, default: Any) -> Any:
+    """Read an optional port member, tolerating adapters that lack it."""
+    try:
+        return getattr(adapter, name)
+    except Exception:  # noqa: BLE001 - port must stay total
+        return default
+
+
+def _lost_frames(
+    adapter: TagBackend,
+    plan: TagPlan,
+    pre_ids: set[str],
+    pre_pics: int,
+    post_ids: set[str],
+    post_pics: int,
+) -> set[str]:
+    """Pre-existing frames/art the write dropped. Empty means nothing lost."""
+    own = _port_value(adapter, "artifact_ids", set())
+    lost = {fid for fid in pre_ids if fid not in post_ids and fid not in own}
+    if pre_pics and post_pics < pre_pics and not plan.will_embed_artwork:
+        lost.add("<pictures>")
+    if not plan.will_embed_artwork:
+        return lost
+    # Front-cover replacement is intended; other art must survive.
+    prefix = _port_value(adapter, "replaceable_art_prefix", None)
+    if not prefix:
+        return lost
+    return {fid for fid in lost if not fid.startswith(prefix)}
+
+
+def _verify_temp(
+    adapter: TagBackend,
+    plan: TagPlan,
+    tmp_path: str,
+    pre_ids: set[str],
+    pre_pics: int,
+    orig_len: float | None,
+) -> _VerifyResult:
+    """Decide whether *tmp_path* may replace the original.
+
+    Three independent questions: did every planned value land, did we lose
+    anything we were supposed to keep, and is the audio still intact?
+    """
+    verify = current_tags(tmp_path)
+    post_ids, post_pics = _post_ids(adapter, tmp_path)
+    lost = _lost_frames(adapter, plan, pre_ids, pre_pics, post_ids, post_pics)
+
+    # Our own delall(fid)+add(fid) keeps the fid, so any loss is unexpected.
+    new_len = _audio_length(tmp_path)
+    audio_ok = orig_len is None or new_len is None or abs(orig_len - new_len) < 0.5
+    landed = all(verify.get(k) == v for k, v in plan.updates.items())
+    return _VerifyResult(
+        ok=landed and not lost and audio_ok,
+        lost=frozenset(lost),
+        audio_ok=audio_ok,
+    )
 
 
 def _abort(path: str, reason: str, tmp_path: str, leftover: str) -> dict[str, Any]:
@@ -299,6 +406,13 @@ def apply_plan(plan: TagPlan, dry_run: bool = True, v2_version: int = 3) -> dict
         leftover = _silent_unlink(tmp_path)
         return _abort(plan.path, f"tag write failed: {e}", tmp_path, leftover)
 
+    # A downgrade to the preferred ID3 revision can drop frames the source
+    # had. Losing a frame to satisfy a format *preference* is the wrong
+    # trade, so restore the source revision instead of losing data.
+    retagged = _restore_dropped_frames(adapter, tmp_path, pre_ids)
+    if retagged:
+        logger.info("Kept source ID3 revision for %s (%s)", plan.path, retagged)
+
     art_ok = False
     if plan.will_embed_artwork and plan.artwork_url:
         fetched = _fetch_artwork(plan.artwork_url)
@@ -312,38 +426,9 @@ def apply_plan(plan: TagPlan, dry_run: bool = True, v2_version: int = 3) -> dict
                 logger.warning("Artwork embed failed for %s: %s", tmp_path, e)
                 art_ok = False
 
-    # 3. Verify the temp copy before it goes anywhere near the original:
-    #    planned frames read back, no pre-existing frame ID lost,
-    #    audio length unchanged.
-    verify = current_tags(tmp_path)
-    try:
-        post_ids, post_pics = adapter.post_ids(tmp_path)
-    except Exception:  # noqa: BLE001 - unreadable temp fails verification
-        post_ids, post_pics = set(), 0
-    try:
-        own = adapter.artifact_ids()
-    except Exception:  # noqa: BLE001 - port must stay total
-        own = set()
-    lost = {fid for fid in pre_ids if fid not in post_ids and fid not in own}
-    if pre_pics and post_pics < pre_pics and not plan.will_embed_artwork:
-        lost.add("<pictures>")
-    if plan.will_embed_artwork:
-        try:
-            prefix = adapter.replaceable_art_prefix()
-        except Exception:  # noqa: BLE001 - port must stay total
-            prefix = None
-        if prefix:
-            # Front-cover replacement is intended; other art must survive.
-            lost = {fid for fid in lost if not fid.startswith(prefix)}
-    # Our own delall(fid)+add(fid) keeps the fid, so any loss is unexpected.
-    new_len = _audio_length(tmp_path)
-    audio_ok = orig_len is None or new_len is None or abs(orig_len - new_len) < 0.5
-    ok = (
-        all(verify.get(k) == v for k, v in plan.updates.items())
-        and not lost
-        and audio_ok
-    )
-    if not ok:
+    # 3. Verify the temp copy before it goes anywhere near the original.
+    check = _verify_temp(adapter, plan, tmp_path, pre_ids, pre_pics, orig_len)
+    if not check.ok:
         _silent_unlink(tmp_path)  # original never touched
         return {
             "path": plan.path,
@@ -353,7 +438,7 @@ def apply_plan(plan: TagPlan, dry_run: bool = True, v2_version: int = 3) -> dict
             "verified": False,
             "error": (
                 f"verify failed, original untouched "
-                f"(lost={sorted(lost)} audio_ok={audio_ok})"
+                f"(lost={sorted(check.lost)} audio_ok={check.audio_ok})"
             ),
         }
 

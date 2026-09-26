@@ -35,6 +35,20 @@ MIN_POLL_SECONDS = 0.05
 type OnDone[T, R] = Callable[[T, R | None, bool], None]
 
 
+def _defer_rest(pending: dict, started: dict[int, float]) -> None:
+    """Report what we are NOT doing, so a resumed run picks it up.
+
+    Deferred items get no ``on_done`` call: they were never started, so
+    calling it would log them as finished work.
+    """
+    if pending:
+        logger.warning(
+            "Stopping early: %d item(s) deferred to the next run", len(pending)
+        )
+    pending.clear()
+    started.clear()
+
+
 def run_pool[T, R](
     items: Iterable[T],
     work: Callable[[T], R],
@@ -43,6 +57,7 @@ def run_pool[T, R](
     workers: int,
     describe: Callable[[T], str] = str,
     stuck_after: float = STUCK_AFTER,
+    stop_when: Callable[[], bool] | None = None,
 ) -> None:
     """Run ``work`` over ``items`` in a bounded pool, calling ``on_done`` per item.
 
@@ -52,6 +67,11 @@ def run_pool[T, R](
     and was abandoned (``result`` None, ``abandoned`` True). A task that
     raises is logged and never propagates: one bad file must not end a
     batch of thousands.
+
+    ``stop_when`` is polled between sweeps; when it returns True the pool
+    stops taking on new work (a circuit breaker for systematic failures).
+    Nothing already running is dropped silently — it is simply left
+    unstarted, and the caller resumes it on the next run.
     """
     started: dict[int, float] = {}
 
@@ -77,8 +97,13 @@ def run_pool[T, R](
                 except Exception as e:  # noqa: BLE001 - one bad item must not kill the batch
                     logger.warning("Worker failed for %s: %s", describe(item), e)
                     on_done(item, None, False)
-                    continue
-                on_done(item, result, False)
+                else:
+                    on_done(item, result, False)
+                # Check after every reap: a fast worker can finish the whole
+                # batch between sweeps, and the breaker must still bite.
+                if stop_when is not None and stop_when():
+                    _defer_rest(pending, started)
+                    return
             for fut, item in list(pending.items()):
                 birth = started.get(id(item))
                 if birth is None or now - birth <= stuck_after:
@@ -89,6 +114,9 @@ def run_pool[T, R](
                 pending.pop(fut)
                 started.pop(id(item), None)
                 on_done(item, None, True)
+            if stop_when is not None and stop_when():
+                _defer_rest(pending, started)
+                return
 
 
 def nothing[T, R](item: T, result: R | None, abandoned: bool) -> None:
