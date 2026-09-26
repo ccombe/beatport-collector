@@ -163,7 +163,8 @@ def _enrich_one(
     """
     path = (
         windows_to_wsl(raw_path)
-        if ":" in raw_path or raw_path.startswith("file://")
+        if (":" in raw_path or raw_path.startswith("file://"))
+        and not os.path.exists(raw_path)
         else raw_path
     )
     from beatport_collector.tagger import AUDIO_EXTENSIONS
