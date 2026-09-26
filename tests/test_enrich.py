@@ -224,6 +224,47 @@ class TestFlacBackend:
         assert not any(n.startswith(".enrich-") for n in siblings)
 
 
+class TestOtherBackends:
+    M4A = "/mnt/c/Users/chris/Desktop/Jimmy Tunes/Autechre/Amber/04 Slip.m4a"
+    WAV = "/mnt/c/Users/chris/Desktop/Jimmy Tunes/Bongo Entp/A Love From Outer Space/2-03. Bongo Entp - Drømmen (SIRS Remix).flac"
+
+    def test_mp4_read(self) -> None:
+        import glob
+
+        files = sorted(
+            glob.glob("/mnt/c/Users/chris/Desktop/Jimmy Tunes/**/*.m4a", recursive=True)
+        )
+        if not files:
+            pytest.skip("no m4a in library")
+        cur = tagger.current_tags(files[0])
+        assert cur["artist"] and cur["title"]
+
+    def test_mp4_apply_on_copy(self, tmp_path) -> None:
+        import shutil
+
+        if not os.path.exists(self.M4A):
+            pytest.skip("library file absent")
+        dst = str(tmp_path / "t.m4a")
+        shutil.copyfile(self.M4A, dst)
+        before = tagger.current_tags(dst)
+        plan = tagger.plan_updates(dst, {"genre": "IDM", "bpm": "120"})
+        assert plan.updates.get("bpm") == "120"
+        report = tagger.apply_plan(plan, dry_run=False)
+        assert report["verified"] is True
+        cur = tagger.current_tags(dst)
+        assert cur["bpm"] == "120"
+        assert cur["artist"] == before["artist"]  # preserved
+
+    def test_wav_aiff_backends_accepted(self) -> None:
+        from beatport_collector.backends import backend_for
+
+        assert backend_for("x.wav") is not None
+        assert backend_for("x.aiff") is not None
+        assert backend_for("x.aif") is not None
+        assert backend_for("x.m4a") is not None
+        assert backend_for("x.ogg") is None
+
+
 class TestTaggerSafety:
     # Synthetic fixtures only (no dependency on library state): tag-only
     # files exercise the ID3 fallback reader.
