@@ -28,6 +28,14 @@ logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 5
 MIN_GAP_SECONDS = 0.5
+# Wall-clock ceiling for one request. ``requests``' timeout is per-read
+# inactivity, so a throttling server that trickles bytes holds the socket
+# open indefinitely; this is the real upper bound.
+DEADLINE_SECONDS = 60.0
+# Ceiling on an honoured Retry-After. Beatport has been observed stalling
+# connections rather than sending 429s, and when it does send one we wait it
+# out properly instead of retrying into the same wall.
+MAX_RETRY_AFTER = 300.0
 
 
 def fetch_artwork(url: str, timeout: int = 30) -> tuple[bytes, str] | None:
@@ -51,11 +59,51 @@ def jittered_sleep(base: float, jitter: float = 0.5) -> None:
     time.sleep(random.uniform(base - delta, base + delta))
 
 
+def _get_with_deadline(
+    url: str,
+    headers: dict[str, str],
+    timeout: float,
+    deadline: float,
+) -> requests.Response:
+    """``requests.get`` bounded by wall clock, not just socket inactivity.
+
+    ``timeout=`` only caps how long a single read may stall, so a server
+    that dribbles bytes resets it forever. We run the call on a daemon
+    thread and give up on it after *deadline* seconds; the abandoned thread
+    dies with the process and, crucially, no longer holds the gap gate.
+
+    Raises whatever the request raised, or :class:`requests.Timeout` if the
+    deadline passed first.
+    """
+    box: dict[str, Any] = {}
+
+    def _call() -> None:
+        try:
+            box["resp"] = requests.get(url, headers=headers, timeout=timeout)
+        except BaseException as e:  # noqa: BLE001 - re-raised on the caller thread
+            box["exc"] = e
+
+    worker = threading.Thread(target=_call, daemon=True)
+    worker.start()
+    worker.join(deadline)
+    if worker.is_alive():
+        raise requests.Timeout(f"no response within {deadline:.0f}s: {url}")
+    if "exc" in box:
+        raise box["exc"]
+    return box["resp"]
+
+
 class BeatportClient:
-    """Polite, retrying GET adapter for Beatport API v4."""
+    """Polite, retrying GET adapter for Beatport API v4.
+
+    The gap gate spaces *request starts* only — it is never held across the
+    network call. Holding it across ``requests.get`` meant one stalled socket
+    froze every worker in the pool (head-of-line blocking), which is exactly
+    how a silent throttle presents.
+    """
 
     _gate_lock = threading.Lock()
-    _last_call = 0.0
+    _last_start = 0.0
 
     def __init__(
         self,
@@ -78,37 +126,50 @@ class BeatportClient:
             "User-Agent": self._user_agent,
         }
 
+    def _pace(self) -> None:
+        """Block until this request may start, then claim the slot.
+
+        The lock is released before any I/O happens, so workers overlap on
+        the wire and a slow response can never stall the whole pool.
+        """
+        with BeatportClient._gate_lock:
+            gap = self._min_gap - (time.monotonic() - BeatportClient._last_start)
+            if gap > 0:
+                time.sleep(gap)
+            BeatportClient._last_start = time.monotonic()
+
     def get(self, url: str) -> dict[str, Any]:
         """GET *url* with gap spacing + Retry-After/exponential backoff.
 
-        Thread-safe across instances: the gap gate is class-level.
+        Thread-safe across instances: the gap gate is class-level. Each
+        attempt is bounded by :data:`DEADLINE_SECONDS` of wall clock, so a
+        trickling response cannot pin a worker forever.
         Raises on persistent failure so callers fail loudly.
         """
         backoff = 2.0
         for attempt in range(self._max_retries + 1):
-            with BeatportClient._gate_lock:
-                gap = self._min_gap - (time.monotonic() - BeatportClient._last_call)
-                if gap > 0:
-                    time.sleep(gap)
-                try:
-                    resp = requests.get(
-                        url, headers=self._headers(), timeout=self._timeout
-                    )
-                except requests.RequestException as e:
-                    BeatportClient._last_call = time.monotonic()
-                    if attempt >= self._max_retries:
-                        raise
-                    logger.warning(
-                        "Beatport request failed (%s), retry in %.0fs", e, backoff
-                    )
-                    time.sleep(backoff)
-                    backoff = min(backoff * 2, 60.0)
-                    continue
-                BeatportClient._last_call = time.monotonic()
+            self._pace()
+            try:
+                resp = _get_with_deadline(
+                    url, self._headers(), self._timeout, DEADLINE_SECONDS
+                )
+            except requests.RequestException as e:
+                if attempt >= self._max_retries:
+                    raise
+                logger.warning(
+                    "Beatport request failed (%s), retry in %.0fs", e, backoff
+                )
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 60.0)
+                continue
             if resp.status_code == 429 or 500 <= resp.status_code < 600:
                 retry_after = resp.headers.get("Retry-After")
                 try:
-                    wait = min(float(retry_after), 60.0) if retry_after else backoff
+                    wait = (
+                        min(float(retry_after), MAX_RETRY_AFTER)
+                        if retry_after
+                        else backoff
+                    )
                 except (ValueError, TypeError):
                     wait = backoff
                 if attempt >= self._max_retries:
