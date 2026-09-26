@@ -38,3 +38,8 @@ music_catalog.db-wal
 # IDE
 .vscode/
 .idea/
+
+# Local scan manifests (regenerable, absolute paths)
+sparse_*.json
+track_cache*.json
+*_progress.jsonl
