@@ -10,9 +10,13 @@ from typing import Any
 
 import requests
 
-from beatport_collector.config import API_BASE, DEFAULT_PER_PAGE, DOWNLOADS_ENDPOINT, TIMEOUT, USER_AGENT
-from beatport_collector.session import BeatportToken
-from beatport_collector.types import Track, DownloadPage
+from beatport_collector.config import (
+    DEFAULT_PER_PAGE,
+    DOWNLOADS_ENDPOINT,
+    TIMEOUT,
+    USER_AGENT,
+)
+from beatport_collector.types import DownloadPage, Track
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +88,9 @@ def fetch_all_downloads(
     all_tracks = list(parsed_first.results)
     total_count = parsed_first.count
     total_pages = max(1, (total_count + per_page - 1) // per_page)
-    page_limit = min(total_pages, start_page - 1 + max_pages) if max_pages else total_pages
+    page_limit = (
+        min(total_pages, start_page - 1 + max_pages) if max_pages else total_pages
+    )
 
     if progress_callback:
         progress_callback(1, total_pages, len(all_tracks))
@@ -103,6 +109,11 @@ def fetch_all_downloads(
             progress_callback(pg, total_pages, len(all_tracks))
 
     if max_pages and page_limit < total_pages:
-        logger.info("Reached session page limit (%d), stopped at page %d/%d.", max_pages, page_limit, total_pages)
+        logger.info(
+            "Reached session page limit (%d), stopped at page %d/%d.",
+            max_pages,
+            page_limit,
+            total_pages,
+        )
 
     return all_tracks, page_limit

@@ -15,7 +15,12 @@ class Artist:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Artist:
-        return cls(id=int(data.get("id", 0)), name=data.get("name", ""), slug=data.get("slug", ""), role=data.get("role", data.get("type", "")))
+        return cls(
+            id=int(data.get("id", 0)),
+            name=data.get("name", ""),
+            slug=data.get("slug", ""),
+            role=data.get("role", data.get("type", "")),
+        )
 
 
 @dataclass
@@ -26,7 +31,11 @@ class Genre:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Genre:
-        return cls(id=int(data.get("id", 0)), name=data.get("name", ""), slug=data.get("slug", ""))
+        return cls(
+            id=int(data.get("id", 0)),
+            name=data.get("name", ""),
+            slug=data.get("slug", ""),
+        )
 
 
 @dataclass
@@ -38,7 +47,12 @@ class Key:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Key:
-        return cls(id=int(data.get("id", 0)), name=data.get("name", ""), camelot_number=data.get("camelot_number", 0), camelot_letter=data.get("camelot_letter", ""))
+        return cls(
+            id=int(data.get("id", 0)),
+            name=data.get("name", ""),
+            camelot_number=data.get("camelot_number", 0),
+            camelot_letter=data.get("camelot_letter", ""),
+        )
 
 
 @dataclass
@@ -73,7 +87,12 @@ class Price:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Price:
         if isinstance(data, dict):
-            return cls(code=data.get("code", ""), symbol=data.get("symbol", ""), value=float(data.get("value", 0)), display=data.get("display", ""))
+            return cls(
+                code=data.get("code", ""),
+                symbol=data.get("symbol", ""),
+                value=float(data.get("value", 0)),
+                display=data.get("display", ""),
+            )
         return cls()
 
 
@@ -106,11 +125,17 @@ class Track:
         artists = [Artist.from_dict(a) for a in data.get("artists", [])]
         remixers = [Artist.from_dict(r) for r in data.get("remixers", [])]
         genre = Genre.from_dict(data["genre"]) if data.get("genre") else None
-        sub_genre = Genre.from_dict(data["sub_genre"]) if data.get("sub_genre") else None
+        sub_genre = (
+            Genre.from_dict(data["sub_genre"]) if data.get("sub_genre") else None
+        )
         label = Label.from_dict(data["label"]) if data.get("label") else None
         release = Release.from_dict(data["release"]) if data.get("release") else None
         key = Key.from_dict(data["key"]) if data.get("key") else None
-        price = Price.from_dict(data["price"]) if isinstance(data.get("price"), dict) else Price()
+        price = (
+            Price.from_dict(data["price"])
+            if isinstance(data.get("price"), dict)
+            else Price()
+        )
 
         return cls(
             id=int(data.get("id", 0)),
@@ -144,7 +169,12 @@ class Cart:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Cart:
-        return cls(id=int(data.get("id", 0)), name=data.get("name", ""), is_default=bool(data.get("default", False)), person_id=int(data.get("person_id", 0)))
+        return cls(
+            id=int(data.get("id", 0)),
+            name=data.get("name", ""),
+            is_default=bool(data.get("default", False)),
+            person_id=int(data.get("person_id", 0)),
+        )
 
 
 @dataclass

@@ -7,7 +7,7 @@ import logging
 import os
 import re
 import unicodedata
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from mutagen import File as MutagenFile
@@ -73,12 +73,12 @@ TITLE_SUFFIXES = re.compile(
 )
 
 SIMPLE_TITLE_SUFFIX = re.compile(
-    rf"\s+(original mix|extended mix|radio edit|club mix|dub mix|vocal mix|instrumental|remix|edit|rework)\s*$",
+    r"\s+(original mix|extended mix|radio edit|club mix|dub mix|vocal mix|instrumental|remix|edit|rework)\s*$",
     re.IGNORECASE,
 )
 
 DASH_SUFFIX = re.compile(
-    rf"\s+[-–—]\s+(original mix|extended mix|radio edit|club mix|dub mix|vocal mix|instrumental|remix|edit|rework)\s*$",
+    r"\s+[-–—]\s+(original mix|extended mix|radio edit|club mix|dub mix|vocal mix|instrumental|remix|edit|rework)\s*$",
     re.IGNORECASE,
 )
 
@@ -137,6 +137,7 @@ def clean_title_condensed(text: str) -> str:
 
 # ── File scanning ────────────────────────────────────────────
 
+
 def find_music_files(directory: str, extensions: set[str]) -> list[str]:
     """Recursively find all music files with given extensions."""
     files: list[str] = []
@@ -160,11 +161,13 @@ def read_file_tags(filepath: str) -> dict[str, Any]:
             for key in audio.tags:
                 vals = audio.tags.get(key)
                 if vals:
-                    tags[key.lower()] = str(vals[0]) if isinstance(vals, list) else str(vals)
+                    tags[key.lower()] = (
+                        str(vals[0]) if isinstance(vals, list) else str(vals)
+                    )
 
             for name, frame_id in ID3_COMMON.items():
                 for variant in (frame_id, frame_id.lower()):
-                    if variant in tags and tags[variant]:
+                    if tags.get(variant):
                         tags[name] = str(tags[variant])
                         break
 
@@ -172,7 +175,7 @@ def read_file_tags(filepath: str) -> dict[str, Any]:
             tags["duration"] = audio.info.length
 
         return tags
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - corrupt files must not crash a library scan
         logger.debug("Could not read tags from %s: %s", filepath, e)
         return {}
 
@@ -205,6 +208,7 @@ def file_to_catalog_row(filepath: str) -> dict[str, str]:
 
 # ── Catalog ──────────────────────────────────────────────────
 
+
 def create_catalog_db(
     music_dir: str,
     extensions: set[str] | None = None,
@@ -216,7 +220,9 @@ def create_catalog_db(
     if extensions is None:
         extensions = DEFAULT_EXTENSIONS
 
-    output_path = output_path or f"music_catalog_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+    output_path = (
+        output_path or f"music_catalog_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}.db"
+    )
 
     with Catalog(output_path) as cat:
         count = cat.build(music_dir, extensions=extensions)
@@ -228,6 +234,7 @@ def create_catalog_db(
 
 
 # ── Matching ─────────────────────────────────────────────────
+
 
 def _norm_artist(text: str) -> str:
     """Normalise artist string: lowercase, strip punctuation, collapse."""
@@ -302,9 +309,13 @@ def match_tracks_to_files(
         cat_clean_title = clean_title(entry.get("Title", ""))
 
         if cat_album and cat_clean_title:
-            by_album_clean_title.setdefault((cat_album, cat_clean_title), []).append(entry)
+            by_album_clean_title.setdefault((cat_album, cat_clean_title), []).append(
+                entry
+            )
         if cat_artist and cat_clean_title:
-            by_artist_clean_title.setdefault((cat_artist, cat_clean_title), []).append(entry)
+            by_artist_clean_title.setdefault((cat_artist, cat_clean_title), []).append(
+                entry
+            )
         if cat_clean_title:
             by_clean_title.setdefault(cat_clean_title, []).append(entry)
 
@@ -343,7 +354,9 @@ def match_tracks_to_files(
 
         # Strategy 4: Artist + clean title
         if not local_path and purchase_artist and purchase_clean:
-            candidates = by_artist_clean_title.get((purchase_artist, purchase_clean), [])
+            candidates = by_artist_clean_title.get(
+                (purchase_artist, purchase_clean), []
+            )
             if not candidates:
                 # Try first artist
                 first = _parse_artists(purchase_artist)[0] if purchase_artist else ""
@@ -367,7 +380,11 @@ def match_tracks_to_files(
 
         # Strategy 7: Artist + purchase_clean is prefix of file clean_title
         if not local_path and purchase_artist and purchase_clean:
-            first = _parse_artists(purchase_artist)[0] if purchase_artist else purchase_artist
+            first = (
+                _parse_artists(purchase_artist)[0]
+                if purchase_artist
+                else purchase_artist
+            )
             for (artist, ct), entries in by_artist_clean_title.items():
                 matched_artist = artist == purchase_artist or artist == first
                 if matched_artist and ct.startswith(f"{purchase_clean} "):
@@ -410,9 +427,15 @@ def scan(
 
     if catalog_path and os.path.exists(catalog_path):
         from beatport_collector.catalog import Catalog
+
         with Catalog(catalog_path) as cat:
             augmented, matched, unmatched = cat.match(purchase_rows)
-        logger.info("Matched %d/%d tracks using catalog %s", matched, len(purchase_rows), catalog_path)
+        logger.info(
+            "Matched %d/%d tracks using catalog %s",
+            matched,
+            len(purchase_rows),
+            catalog_path,
+        )
     else:
         files = find_music_files(music_dir, extensions)
         if not files:
@@ -422,7 +445,9 @@ def scan(
         augmented, matched, unmatched = match_tracks_to_files(purchase_rows, catalog)
 
     if output_path is None:
-        output_path = f"beatport_matched_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        output_path = (
+            f"beatport_matched_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}.csv"
+        )
 
     with open(output_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=list(MATCHED_CSV_FIELDS))

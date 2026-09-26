@@ -16,10 +16,21 @@ packages = ["src/beatport_collector"]
 [tool.uv.sources]
 
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = [
+    "pytest>=8",
+    "ruff>=0.16.9",
+    "ty>=0.0.84",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py313"
+
+[tool.ty]
+# Astral ty: strict-ish defaults; run `uv run --group dev ty check src/`
+# (or `uvx ty check src/` when the venv is for another platform).
 
 [project.scripts]
 beatport-collector = "beatport_collector.cli:main"

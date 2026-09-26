@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import logging
-import os
 import sqlite3
-from typing import Any
+from typing import Any, Self
 
+from beatport_collector.scanner import DEFAULT_EXTENSIONS as _DE
 from beatport_collector.scanner import (
     _artists_overlap,
     _norm_artist,
@@ -17,7 +17,6 @@ from beatport_collector.scanner import (
     levenshtein,
     normalize,
 )
-from beatport_collector.scanner import DEFAULT_EXTENSIONS as _DE
 
 logger = logging.getLogger(__name__)
 
@@ -64,9 +63,7 @@ class Catalog:
                 clean_title       TEXT DEFAULT ''
             )
         """)
-        self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_isrc ON tracks(isrc)"
-        )
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_isrc ON tracks(isrc)")
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_album_title "
             "ON tracks(normalized_album, clean_title)"
@@ -76,8 +73,7 @@ class Catalog:
             "ON tracks(normalized_artist, clean_title)"
         )
         self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_clean_title "
-            "ON tracks(clean_title)"
+            "CREATE INDEX IF NOT EXISTS idx_clean_title ON tracks(clean_title)"
         )
         self._conn.commit()
 
@@ -228,8 +224,7 @@ class Catalog:
         # 5. Just clean title
         if purchase_clean:
             cur = self._conn.execute(
-                "SELECT file_path FROM tracks "
-                "WHERE clean_title = ? LIMIT 1",
+                "SELECT file_path FROM tracks WHERE clean_title = ? LIMIT 1",
                 (purchase_clean,),
             )
             r = cur.fetchone()
@@ -296,7 +291,11 @@ class Catalog:
                     return r["file_path"]
 
         # 10. Condensed + album substring
-        if purchase_condensed and purchase_condensed != purchase_clean and purchase_album:
+        if (
+            purchase_condensed
+            and purchase_condensed != purchase_clean
+            and purchase_album
+        ):
             cur = self._conn.execute(
                 "SELECT file_path FROM tracks "
                 "WHERE REPLACE(clean_title, ' ', '') = ? AND "
@@ -331,11 +330,14 @@ class Catalog:
             threshold = max(2, len(purchase_clean) // 5)
             for r in cur.fetchall():
                 db_ct = r["clean_title"]
-                if db_ct and abs(len(db_ct) - len(purchase_clean)) <= threshold:
+                if (
+                    db_ct
+                    and abs(len(db_ct) - len(purchase_clean)) <= threshold
+                    and levenshtein(purchase_clean, db_ct) <= threshold
+                ):
                     entry_set = set(_parse_artists(_norm_artist(r["artist"])))
                     if _artists_overlap(purchase_set, entry_set):
-                        if levenshtein(purchase_clean, db_ct) <= threshold:
-                            return r["file_path"]
+                        return r["file_path"]
 
         # 13. Album substring + contains (one title is substring of the other)
         if purchase_album and purchase_clean and purchase_artist:
@@ -358,17 +360,15 @@ class Catalog:
     def stats(self) -> dict[str, Any]:
         cur = self._conn.execute("SELECT COUNT(*) AS n FROM tracks")
         total = cur.fetchone()["n"]
-        cur = self._conn.execute(
-            "SELECT COUNT(*) AS n FROM tracks WHERE isrc != ''"
-        )
+        cur = self._conn.execute("SELECT COUNT(*) AS n FROM tracks WHERE isrc != ''")
         isrc_count = cur.fetchone()["n"]
         return {"tracks": total, "with_isrc": isrc_count}
 
     def close(self) -> None:
         self._conn.close()
 
-    def __enter__(self) -> Catalog:
+    def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, *args: Any) -> None:
+    def __exit__(self, *args: object) -> None:
         self.close()

@@ -8,8 +8,8 @@ import os
 import urllib.parse
 from collections import defaultdict
 from datetime import datetime
-from xml.etree.ElementTree import Element, SubElement, tostring
 from xml.dom import minidom
+from xml.etree.ElementTree import Element, SubElement, tostring
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ def _parse_purchase_date(raw: str) -> datetime | None:
         return None
     for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
         try:
-            return datetime.strptime(raw.strip(), fmt)
+            return datetime.strptime(raw.strip(), fmt)  # noqa: DTZ007 - legacy CSV dates are naive by design
         except ValueError:
             continue
     return None

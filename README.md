@@ -97,6 +97,41 @@ uv run beatport-collector scan /path/to/music --csv purchases.csv --ext mp3 --pl
 uv run pytest -v
 ```
 
+## Code quality
+
+```powershell
+uv run --group dev ruff check src/ tests/
+uv run --group dev ruff format src/ tests/
+uv run --group dev ty check src/ tests/
+```
+
+## Enriching MP3 tags from the Beatport catalog
+
+Fill missing `genre`/`date`/`album` (plus BPM, key, label, ISRC, cover art)
+from `GET /v4/catalog/tracks/` — matched by artist + title, disambiguated by
+audio duration (±7s), oldest release winning over compilations. Promo junk
+(`myfreemp3.vip`, `electronicfresh.com`, trailing `128`s, doubled mixes)
+counts as missing and gets replaced; legit tags are never touched.
+
+```powershell
+# Single files (dry-run default)
+uv run beatport-collector enrich track1.mp3 track2.mp3 --limit 5
+
+# Whole folder: dry-run first, then apply the logged matches (no re-search)
+uv run beatport-collector batch sparse.json --progress dryrun.jsonl --workers 4
+uv run beatport-collector apply dryrun.jsonl --cache tracks.json --progress apply.jsonl --workers 4
+```
+
+Safety: writes go to a temp copy, are verified (planned frames read back,
+no pre-existing frame lost, audio length unchanged), then atomically replace
+the original — no backup files left behind. Tags save as **ID3v2.3**, the
+widest-supported revision (foobar2000, Serato, Rekordbox, Windows Explorer).
+
+Rate limits: Beatport publishes none (developer agreement governs; 429 means
+back off). The client spaces searches 2s + jitter apart, enforces a 0.5s
+global gap across workers, and retries 429/5xx with exponential backoff
+honouring `Retry-After`.
+
 ## Future idea: ID3v2 purchase-date tagging
 
 A natural next step would be writing the purchase date directly into each MP3's

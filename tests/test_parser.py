@@ -2,20 +2,13 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from beatport_collector.types import (
+    CSV_FIELDS,
     Artist,
-    Genre,
-    Key,
-    Label,
-    Price,
-    Release,
     Track,
     track_to_row,
-    CSV_FIELDS,
 )
 
 
@@ -28,11 +21,25 @@ def sample_track_data() -> dict:
             {"id": 1112601, "name": "Meera (NO)", "slug": "meera-no"},
             {"id": 962671, "name": "Tripolism", "slug": "tripolism"},
         ],
-        "remixers": [{"id": 1241965, "name": "Meera Rai Bertelsen", "slug": "meera-rai-bertelsen"}],
+        "remixers": [
+            {
+                "id": 1241965,
+                "name": "Meera Rai Bertelsen",
+                "slug": "meera-rai-bertelsen",
+            }
+        ],
         "genre": {"id": 89, "name": "Afro House", "slug": "afro-house"},
-        "sub_genre": {"id": 1, "name": "Organic House / Downtempo", "slug": "organic-house-downtempo"},
+        "sub_genre": {
+            "id": 1,
+            "name": "Organic House / Downtempo",
+            "slug": "organic-house-downtempo",
+        },
         "label": {"id": 1328, "name": "Crosstown Rebels"},
-        "release": {"id": 4683859, "name": "Stikk", "label": {"id": 1328, "name": "Crosstown Rebels"}},
+        "release": {
+            "id": 4683859,
+            "name": "Stikk",
+            "label": {"id": 1328, "name": "Crosstown Rebels"},
+        },
         "key": {"id": 5, "name": "C Minor", "camelot_number": 5, "camelot_letter": "A"},
         "bpm": 123,
         "isrc": "GB7NR2431602",
@@ -49,7 +56,9 @@ def sample_track_data() -> dict:
 
 class TestArtist:
     def test_from_dict(self) -> None:
-        artist = Artist.from_dict({"id": 1112601, "name": "Meera (NO)", "slug": "meera-no"})
+        artist = Artist.from_dict(
+            {"id": 1112601, "name": "Meera (NO)", "slug": "meera-no"}
+        )
         assert artist.id == 1112601
         assert artist.name == "Meera (NO)"
         assert artist.slug == "meera-no"
@@ -95,7 +104,12 @@ class TestTrack:
         assert track.bpm == 0
 
     def test_from_downloads_api_partial(self) -> None:
-        data = {"id": 123, "name": "Test Track", "artists": [], "purchase_date": "2023-01-01"}
+        data = {
+            "id": 123,
+            "name": "Test Track",
+            "artists": [],
+            "purchase_date": "2023-01-01",
+        }
         track = Track.from_downloads_api(data)
         assert track.id == 123
         assert track.name == "Test Track"
@@ -146,7 +160,12 @@ class TestTrackToRow:
         assert row["Duration"] == "6:30"
 
     def test_no_remixers(self) -> None:
-        data = {"id": 1, "name": "T", "artists": [{"id": 1, "name": "DJ Test"}], "remixers": []}
+        data = {
+            "id": 1,
+            "name": "T",
+            "artists": [{"id": 1, "name": "DJ Test"}],
+            "remixers": [],
+        }
         track = Track.from_downloads_api(data)
         row = track_to_row(track)
         assert row["Remixers"] == ""
@@ -171,4 +190,6 @@ class TestCSVFields:
         row = track_to_row(track)
         for field in CSV_FIELDS:
             assert field in row, f"CSV field '{field}' missing from row"
-        assert len(row) == len(CSV_FIELDS), f"Expected {len(CSV_FIELDS)} fields, got {len(row)}"
+        assert len(row) == len(CSV_FIELDS), (
+            f"Expected {len(CSV_FIELDS)} fields, got {len(row)}"
+        )

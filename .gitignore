@@ -26,6 +26,7 @@ beatport_session.json
 
 # Playlists
 playlists/
+archive/
 
 # Music catalog (rebuilt from scratch each scan)
 music_catalog.db
