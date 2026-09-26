@@ -360,7 +360,7 @@ def main() -> None:
     enrich_parser.add_argument(
         "paths",
         nargs="+",
-        help="MP3 file(s) or file:// URIs (e.g. from foobar playlist)",
+        help="Audio file(s) MP3/FLAC or file:// URIs (e.g. from foobar playlist)",
     )
     enrich_parser.add_argument(
         "--limit",

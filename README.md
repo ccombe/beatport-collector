@@ -105,7 +105,7 @@ uv run --group dev ruff format src/ tests/
 uv run --group dev ty check src/ tests/
 ```
 
-## Enriching MP3 tags from the Beatport catalog
+## Enriching MP3/FLAC tags from the Beatport catalog
 
 Fill missing `genre`/`date`/`album` (plus BPM, key, label, ISRC, cover art)
 from `GET /v4/catalog/tracks/` — matched by artist + title, disambiguated by

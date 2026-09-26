@@ -65,6 +65,34 @@ TEXT_FRAMES = (
     "isrc",
 )
 
+AUDIO_EXTENSIONS = (".mp3", ".flac")
+
+# Vorbis field names for the same logical frames (FLAC container).
+VORBIS_MAP = {
+    "artist": "artist",
+    "title": "title",
+    "album": "album",
+    "genre": "genre",
+    "date": "date",
+    "bpm": "bpm",
+    "key": "key",
+    "label": "organization",
+    "isrc": "isrc",
+}
+
+PROVENANCE_KEY = "beatport_enriched"
+
+
+def _backend(path: str) -> str | None:
+    """Tag container for a path: 'mp3' (ID3v2.3), 'flac' (Vorbis), else None."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".mp3":
+        return "mp3"
+    if ext == ".flac":
+        return "flac"
+    return None
+
+
 # Promo/junk detectors — a value matching any of these counts as MISSING and
 # may be replaced with proper Beatport data (additive-only otherwise).
 JUNK_DOMAINS = (
@@ -108,6 +136,7 @@ class TagPlan:
     will_embed_artwork: bool = False
     reason: str = ""
     overwrite: bool = False
+    art_overwrite: bool = False
 
 
 def _silent_unlink(path: str) -> None:
@@ -156,8 +185,35 @@ def _frame_text(tags: ID3, frame_id: str) -> str:
     return ""
 
 
+def _read_vorbis(path: str) -> dict[str, str]:
+    """Read Vorbis comments (FLAC) into the same logical frame dict."""
+    from mutagen.flac import FLAC
+
+    try:
+        audio = FLAC(path)
+    except Exception as e:  # noqa: BLE001 - corrupt files read as empty
+        logger.warning("Cannot load %s: %s", path, e)
+        return {}
+    lower = {k.lower(): v for k, v in audio.items()}
+    return {
+        key: str(lower.get(field, [""])[0]) if lower.get(field) else ""
+        for key, field in VORBIS_MAP.items()
+    }
+
+
+def _vorbis_has_art(path: str) -> bool:
+    from mutagen.flac import FLAC
+
+    try:
+        return len(FLAC(path).pictures) > 0
+    except Exception:  # noqa: BLE001 - unreadable means no usable art
+        return False
+
+
 def current_tags(path: str) -> dict[str, str]:
     """Read the tag values we care about ('' when missing)."""
+    if _backend(path) == "flac":
+        return _read_vorbis(path)
     tags = _read_id3(path)
     if tags is None:
         return {}
@@ -206,8 +262,11 @@ def plan_updates(
     replaced unless art_overwrite=True.
     """
     cur = current_tags(path)
-    tags = _read_id3(path)
-    has_art = bool(tags and tags.getall("APIC")) if tags is not None else False
+    if _backend(path) == "flac":
+        has_art = _vorbis_has_art(path)
+    else:
+        tags = _read_id3(path)
+        has_art = bool(tags and tags.getall("APIC")) if tags is not None else False
     updates: dict[str, str] = {}
     junk_replaced: dict[str, str] = {}
     if cur is None:
@@ -229,6 +288,7 @@ def plan_updates(
         has_artwork_already=has_art,
         will_embed_artwork=will_art,
         overwrite=overwrite,
+        art_overwrite=art_overwrite,
     )
     if junk_replaced:
         plan.reason = f"junk:{junk_replaced}"
@@ -271,14 +331,16 @@ def apply_plan(plan: TagPlan, dry_run: bool = True, v2_version: int = 3) -> dict
             "note": "nothing to do",
         }
 
-    if not plan.path.lower().endswith(".mp3") or not os.path.exists(plan.path):
-        return {"path": plan.path, "error": "not an existing .mp3"}
+    if _backend(plan.path) is None or not os.path.exists(plan.path):
+        return {"path": plan.path, "error": "not a supported audio file (.mp3/.flac)"}
 
     orig_len = _audio_length(plan.path)
 
     # 1. Work on a temp copy; the original stays untouched until verified.
     tmp_fd, tmp_path = tempfile.mkstemp(
-        prefix=".enrich-", suffix=".mp3", dir=os.path.dirname(plan.path) or "."
+        prefix=".enrich-",
+        suffix=os.path.splitext(plan.path)[1].lower(),
+        dir=os.path.dirname(plan.path) or ".",
     )
     os.close(tmp_fd)
     try:
@@ -287,68 +349,121 @@ def apply_plan(plan: TagPlan, dry_run: bool = True, v2_version: int = 3) -> dict
         _silent_unlink(tmp_path)
         return {"path": plan.path, "error": f"temp copy failed, aborting: {e}"}
 
-    tags = _read_id3(tmp_path)
-    if tags is None:
-        _silent_unlink(tmp_path)
-        return {"path": plan.path, "error": "load failed: unreadable file"}
-    pre_ids = set(tags.keys())
-
-    frame_map = {
-        "artist": ("TPE1", TPE1),
-        "title": ("TIT2", TIT2),
-        "album": ("TALB", TALB),
-        "genre": ("TCON", TCON),
-        "date": ("TDRC", TDRC),
-        "bpm": ("TBPM", TBPM),
-        "key": ("TKEY", TKEY),
-        "label": ("TPUB", TPUB),
-        "isrc": ("TSRC", TSRC),
-    }
-    for key, val in plan.updates.items():
-        fid, cls = frame_map[key]
-        # Defense in depth: never clobber a legit existing value on the
-        # additive path — junk/empty only (plan already enforces this).
-        if not plan.overwrite:
-            existing = _frame_text(tags, fid)
-            if existing and not is_junk_value(existing)[0]:
-                continue
-        # UTF-8 text, read by all modern players.
-        tags.delall(fid)
-        tags.add(cls(encoding=3, text=val))
-    # Provenance markers (additive, never overwrite audio).
-    tags.delall("TXXX:BEATPORT_ENRICHED")
-    tags.add(TXXX(encoding=3, desc="BEATPORT_ENRICHED", text="1"))
-
+    backend = _backend(tmp_path)
     art_ok = False
-    if plan.will_embed_artwork and plan.artwork_url:
-        fetched = _fetch_artwork(plan.artwork_url)
-        if fetched:
-            data, mime = fetched
-            # Replace front covers only; keep back-cover/artist APICs.
-            for apic in list(tags.getall("APIC")):
-                if apic.type == 3:
-                    del tags[apic.HashKey]
-            tags.add(APIC(encoding=3, mime=mime, type=3, desc="Cover", data=data))
-            art_ok = True
+    pre_ids: set[str] = set()
+    pre_pics = 0
+    if backend == "flac":
+        from mutagen.flac import FLAC, Picture
 
-    # ID3v2.3 default for max compatibility (foobar/Serato/Rekordbox/
-    # Windows Explorer). Written to the temp copy only. Audio untouched.
-    tags.save(tmp_path, v2_version=v2_version)
+        try:
+            flac = FLAC(tmp_path)
+        except Exception as e:  # noqa: BLE001 - corrupt audio reports, never crashes
+            _silent_unlink(tmp_path)
+            return {"path": plan.path, "error": f"load failed: {e}"}
+        pre_ids = {k.lower() for k in flac}
+        pre_pics = len(flac.pictures)
+        for key, val in plan.updates.items():
+            field = VORBIS_MAP[key]
+            if not plan.overwrite:
+                existing_vals = flac.get(field, [])
+                existing = str(existing_vals[0]) if existing_vals else ""
+                if existing and not is_junk_value(existing)[0]:
+                    continue
+            flac[field] = [val]
+        flac[PROVENANCE_KEY] = ["1"]
+        if plan.will_embed_artwork and plan.artwork_url:
+            fetched = _fetch_artwork(plan.artwork_url)
+            if fetched:
+                data, mime = fetched
+                if plan.art_overwrite:
+                    keep = [p for p in flac.pictures if p.type != 3]
+                    flac.clear_pictures()
+                    for p in keep:
+                        flac.add_picture(p)
+                pic = Picture()
+                pic.mime = mime
+                pic.type = 3
+                pic.desc = "Cover"
+                pic.data = data
+                flac.add_picture(pic)
+                art_ok = True
+        flac.save(tmp_path)
+    else:
+        tags = _read_id3(tmp_path)
+        if tags is None:
+            _silent_unlink(tmp_path)
+            return {"path": plan.path, "error": "load failed: unreadable file"}
+        pre_ids = set(tags.keys())
+
+        frame_map = {
+            "artist": ("TPE1", TPE1),
+            "title": ("TIT2", TIT2),
+            "album": ("TALB", TALB),
+            "genre": ("TCON", TCON),
+            "date": ("TDRC", TDRC),
+            "bpm": ("TBPM", TBPM),
+            "key": ("TKEY", TKEY),
+            "label": ("TPUB", TPUB),
+            "isrc": ("TSRC", TSRC),
+        }
+        for key, val in plan.updates.items():
+            fid, cls = frame_map[key]
+            # Defense in depth: never clobber a legit existing value on the
+            # additive path — junk/empty only (plan already enforces this).
+            if not plan.overwrite:
+                existing = _frame_text(tags, fid)
+                if existing and not is_junk_value(existing)[0]:
+                    continue
+            # UTF-8 text, read by all modern players.
+            tags.delall(fid)
+            tags.add(cls(encoding=3, text=val))
+        # Provenance markers (additive, never overwrite audio).
+        tags.delall("TXXX:BEATPORT_ENRICHED")
+        tags.add(TXXX(encoding=3, desc="BEATPORT_ENRICHED", text="1"))
+
+        if plan.will_embed_artwork and plan.artwork_url:
+            fetched = _fetch_artwork(plan.artwork_url)
+            if fetched:
+                data, mime = fetched
+                # Replace front covers only; keep back-cover/artist APICs.
+                for apic in list(tags.getall("APIC")):
+                    if apic.type == 3:
+                        del tags[apic.HashKey]
+                tags.add(APIC(encoding=3, mime=mime, type=3, desc="Cover", data=data))
+                art_ok = True
+
+        # ID3v2.3 default for max compatibility (foobar/Serato/Rekordbox/
+        # Windows Explorer). Written to the temp copy only. Audio untouched.
+        tags.save(tmp_path, v2_version=v2_version)
 
     # 3. Verify the temp copy before it goes anywhere near the original:
     #    planned frames read back, no pre-existing frame ID lost,
     #    audio length unchanged.
     verify = current_tags(tmp_path)
-    post_tags = _read_id3(tmp_path)
-    post_ids = set(post_tags.keys()) if post_tags is not None else set()
-    lost = {
-        fid
-        for fid in pre_ids
-        if fid not in post_ids and fid != "TXXX:BEATPORT_ENRICHED"
-    }
-    if plan.will_embed_artwork:
-        # Front-cover replacement is intended; other APICs must survive.
-        lost = {fid for fid in lost if not fid.startswith("APIC:")}
+    if backend == "flac":
+        from mutagen.flac import FLAC as _FLACheck
+
+        try:
+            post_audio = _FLACheck(tmp_path)
+            post_ids = {k.lower() for k in post_audio}
+            post_pics = len(post_audio.pictures)
+        except Exception:  # noqa: BLE001 - unreadable temp fails verification
+            post_ids, post_pics = set(), 0
+        lost = {fid for fid in pre_ids if fid not in post_ids and fid != PROVENANCE_KEY}
+        if pre_pics and post_pics < pre_pics and not plan.will_embed_artwork:
+            lost.add("<pictures>")
+    else:
+        post_tags = _read_id3(tmp_path)
+        post_ids = set(post_tags.keys()) if post_tags is not None else set()
+        lost = {
+            fid
+            for fid in pre_ids
+            if fid not in post_ids and fid != "TXXX:BEATPORT_ENRICHED"
+        }
+        if plan.will_embed_artwork:
+            # Front-cover replacement is intended; other APICs must survive.
+            lost = {fid for fid in lost if not fid.startswith("APIC:")}
     # Our own delall(fid)+add(fid) keeps the fid, so any loss is unexpected.
     new_len = _audio_length(tmp_path)
     audio_ok = orig_len is None or new_len is None or abs(orig_len - new_len) < 0.5

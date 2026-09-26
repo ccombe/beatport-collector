@@ -101,7 +101,9 @@ def _enrich_one(
         if ":" in raw_path or raw_path.startswith("file://")
         else raw_path
     )
-    if not path.lower().endswith(".mp3") or not os.path.exists(path):
+    from beatport_collector.tagger import AUDIO_EXTENSIONS
+
+    if not path.lower().endswith(AUDIO_EXTENSIONS) or not os.path.exists(path):
         return None
     needs, _ = file_needs_enrichment(path)
     if not needs:

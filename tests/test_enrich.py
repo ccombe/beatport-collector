@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 
+import pytest
 from mutagen.id3 import ID3, TCON, TIT2, TPE1
 
 from beatport_collector import enrich, tagger
@@ -195,6 +196,32 @@ class TestJunkDetection:
         tags.save(dst, v2_version=4)
         plan = tagger.plan_updates(dst, {"title": "WRONG", "genre": "WRONG"})
         assert plan.updates == {}
+
+
+class TestFlacBackend:
+    SRC = "/mnt/c/Users/chris/Desktop/Jimmy Tunes/Bongo Entp/A Love From Outer Space/2-03. Bongo Entp - Drømmen (SIRS Remix).flac"
+
+    def test_vorbis_read(self) -> None:
+        if not os.path.exists(self.SRC):
+            pytest.skip("library file absent")
+        cur = tagger.current_tags(self.SRC)
+        assert cur["artist"] == "Bongo Entp"
+        assert cur["album"] == "A Love From Outer Space"
+
+    def test_plan_and_apply_on_copy(self, tmp_path) -> None:
+        if not os.path.exists(self.SRC):
+            pytest.skip("library file absent")
+        dst = str(tmp_path / "t.flac")
+        shutil.copyfile(self.SRC, dst)
+        plan = tagger.plan_updates(dst, {"genre": "Nu Disco / Disco"})
+        assert plan.updates.get("genre") == "Nu Disco / Disco"
+        report = tagger.apply_plan(plan, dry_run=False)
+        assert report["verified"] is True
+        cur = tagger.current_tags(dst)
+        assert cur["genre"] == "Nu Disco / Disco"
+        assert cur["artist"] == "Bongo Entp"  # preserved
+        siblings = [pl.name for pl in tmp_path.iterdir()]
+        assert not any(n.startswith(".enrich-") for n in siblings)
 
 
 class TestTaggerSafety:
