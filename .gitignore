@@ -47,3 +47,6 @@ track_cache*.json
 # Live run logs + per-run manifests
 sparse_gdrive_*.json*
 gdrive_live.log
+
+# Throwaway probes
+probe*.*
