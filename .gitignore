@@ -44,15 +44,26 @@ sparse_*.json
 track_cache*.json
 *_progress.jsonl
 
-# Live run logs + per-run manifests
-sparse_gdrive_*.json*
-gdrive_live.log
+# Per-run state: progress logs, run logs, manifests. These embed absolute
+# paths into the listener's private music library, so they must never be
+# committed. Every one is regenerable by rerunning the command.
+*.jsonl
+*.log
+*.err
+*_todo*.json
+*_apply*.json
+gdrive_*
+
+# Temp files left by an interrupted write (cleaned up on the next run)
+.enrich-*
+.repair-*
+.trackcache-*
+*.tmp
 
 # Throwaway probes
 probe*.*
-
-# transient manifests / run logs from live batch work
-gdrive_*.log
-gdrive_*.err
-gdrive_*.jsonl
-sparse_gdrive_todo*.json
+_verify_tmp.py
+_diag*.py
+_recover*.py
+_cmp*.py
+*_tmp.py

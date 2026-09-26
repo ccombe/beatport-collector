@@ -1,15 +1,48 @@
-"""Tests for catalog oldest-pick, tag planning, and enrich filtering."""
+"""Tests for catalog oldest-pick, tag planning, and enrich filtering.
+
+A few tests run against real audio to exercise the FLAC/M4A/WAV backends.
+Point ``BPC_LIBRARY_DIR`` at a music directory to enable them; they skip
+otherwise, so the suite is green on any machine and no personal library
+paths are baked into the repo.
+"""
 
 from __future__ import annotations
 
+import glob
 import os
 import shutil
+from collections.abc import Callable
 
 import pytest
 from mutagen.id3 import ID3, TCON, TIT2, TPE1
 
 from beatport_collector import enrich, tagger
 from beatport_collector.catalog_api import CatalogTrack, pick_best, pick_oldest
+
+
+def _library(pattern: str, where: Callable[[str], bool] | None = None) -> str:
+    """First real library file matching *pattern*, or "" to skip.
+
+    Relative to ``BPC_LIBRARY_DIR`` so nothing personal is committed.
+    *where* narrows the choice, e.g. to a file that is actually missing a
+    tag — the additive-only planner correctly leaves complete files alone.
+    """
+    root = os.environ.get("BPC_LIBRARY_DIR", "")
+    if not root or not os.path.isdir(root):
+        return ""
+    for path in sorted(glob.glob(os.path.join(root, pattern), recursive=True)):
+        if where is None or where(path):
+            return path
+    return ""
+
+
+def _missing(field: str) -> Callable[[str], bool]:
+    """Predicate matching a file whose *field* is absent or blank."""
+
+    def check(path: str) -> bool:
+        return not tagger.current_tags(path).get(field)
+
+    return check
 
 
 def _make_track(
@@ -129,14 +162,14 @@ class TestSplitMix:
 class TestPathMapping:
     def test_windows_to_wsl(self) -> None:
         assert (
-            enrich.windows_to_wsl("file://C:\\Users\\chris\\x.mp3")
-            == "/mnt/c/Users/chris/x.mp3"
+            enrich.windows_to_wsl("file://C:\\Users\\example\\x.mp3")
+            == "/mnt/c/Users/example/x.mp3"
         )
 
     def test_wsl_to_windows(self) -> None:
         assert (
-            enrich.wsl_to_windows("/mnt/c/Users/chris/x.mp3")
-            == "C:\\Users\\chris\\x.mp3"
+            enrich.wsl_to_windows("/mnt/c/Users/example/x.mp3")
+            == "C:\\Users\\example\\x.mp3"
         )
 
 
@@ -199,18 +232,20 @@ class TestJunkDetection:
 
 
 class TestFlacBackend:
-    SRC = "/mnt/c/Users/chris/Desktop/Jimmy Tunes/Bongo Entp/A Love From Outer Space/2-03. Bongo Entp - Drømmen (SIRS Remix).flac"
+    @property
+    def SRC(self) -> str:
+        return _library("**/*.flac", _missing("genre"))
 
     def test_vorbis_read(self) -> None:
-        if not os.path.exists(self.SRC):
-            pytest.skip("library file absent")
+        if not self.SRC:
+            pytest.skip("no flac in BPC_LIBRARY_DIR")
         cur = tagger.current_tags(self.SRC)
-        assert cur["artist"] == "Bongo Entp"
-        assert cur["album"] == "A Love From Outer Space"
+        assert cur["artist"] or cur["title"]
 
     def test_plan_and_apply_on_copy(self, tmp_path) -> None:
-        if not os.path.exists(self.SRC):
-            pytest.skip("library file absent")
+        if not self.SRC:
+            pytest.skip("no flac in BPC_LIBRARY_DIR")
+        before = tagger.current_tags(self.SRC)
         dst = str(tmp_path / "t.flac")
         shutil.copyfile(self.SRC, dst)
         plan = tagger.plan_updates(dst, {"genre": "Nu Disco / Disco"})
@@ -219,31 +254,29 @@ class TestFlacBackend:
         assert report["verified"] is True
         cur = tagger.current_tags(dst)
         assert cur["genre"] == "Nu Disco / Disco"
-        assert cur["artist"] == "Bongo Entp"  # preserved
+        # Everything we did not ask to change must survive.
+        for key in ("artist", "title", "album", "bpm", "key"):
+            if before.get(key):
+                assert cur[key] == before[key], f"{key} was not preserved"
         siblings = [pl.name for pl in tmp_path.iterdir()]
         assert not any(n.startswith(".enrich-") for n in siblings)
 
 
 class TestOtherBackends:
-    M4A = "/mnt/c/Users/chris/Desktop/Jimmy Tunes/Autechre/Amber/04 Slip.m4a"
-    WAV = "/mnt/c/Users/chris/Desktop/Jimmy Tunes/Bongo Entp/A Love From Outer Space/2-03. Bongo Entp - Drømmen (SIRS Remix).flac"
+    @property
+    def M4A(self) -> str:
+        return _library("**/*.m4a")
 
     def test_mp4_read(self) -> None:
-        import glob
-
-        files = sorted(
-            glob.glob("/mnt/c/Users/chris/Desktop/Jimmy Tunes/**/*.m4a", recursive=True)
-        )
-        if not files:
-            pytest.skip("no m4a in library")
-        cur = tagger.current_tags(files[0])
-        assert cur["artist"] and cur["title"]
+        src = self.M4A
+        if not src:
+            pytest.skip("no m4a in BPC_LIBRARY_DIR")
+        cur = tagger.current_tags(src)
+        assert cur["artist"] or cur["title"]
 
     def test_mp4_apply_on_copy(self, tmp_path) -> None:
-        import shutil
-
-        if not os.path.exists(self.M4A):
-            pytest.skip("library file absent")
+        if not self.M4A:
+            pytest.skip("no m4a in BPC_LIBRARY_DIR")
         dst = str(tmp_path / "t.m4a")
         shutil.copyfile(self.M4A, dst)
         before = tagger.current_tags(dst)
@@ -421,8 +454,8 @@ class TestTaggerSafety:
         assert not any(n.startswith(".enrich-") for n in siblings)
 
     def test_existing_artwork_preserved_without_overwrite(self, tmp_path) -> None:
-        src = "/mnt/c/Users/chris/Desktop/Jimmy Tunes/UnknownArtist/UnknownAlbum/Astrohertz - For You (Original Mix).mp3"
-        if not os.path.exists(src):
+        src = _library("**/*.mp3")
+        if not src:
             return
         dst = _make_mp3_copy(tmp_path, src)
         plan = tagger.plan_updates(
