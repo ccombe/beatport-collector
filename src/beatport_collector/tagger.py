@@ -158,11 +158,16 @@ def _post_ids(adapter: TagBackend, path: str) -> tuple[set[str], int]:
         return set(), 0
 
 
-def _port_value(adapter: TagBackend, name: str, default: Any) -> Any:
-    """Read an optional port member, tolerating adapters that lack it."""
+def _port_call(adapter: TagBackend, name: str, default: Any) -> Any:
+    """Call an optional port method, tolerating adapters that lack it.
+
+    The port must stay total: a backend that cannot answer is treated as
+    having nothing, which makes verification fail loudly rather than pass.
+    """
     try:
-        return getattr(adapter, name)
-    except Exception:  # noqa: BLE001 - port must stay total
+        member = getattr(adapter, name)
+        return member() if callable(member) else member
+    except Exception:  # noqa: BLE001
         return default
 
 
@@ -175,14 +180,14 @@ def _lost_frames(
     post_pics: int,
 ) -> set[str]:
     """Pre-existing frames/art the write dropped. Empty means nothing lost."""
-    own = _port_value(adapter, "artifact_ids", set())
+    own = _port_call(adapter, "artifact_ids", set())
     lost = {fid for fid in pre_ids if fid not in post_ids and fid not in own}
     if pre_pics and post_pics < pre_pics and not plan.will_embed_artwork:
         lost.add("<pictures>")
     if not plan.will_embed_artwork:
         return lost
     # Front-cover replacement is intended; other art must survive.
-    prefix = _port_value(adapter, "replaceable_art_prefix", None)
+    prefix = _port_call(adapter, "replaceable_art_prefix", None)
     if not prefix:
         return lost
     return {fid for fid in lost if not fid.startswith(prefix)}
