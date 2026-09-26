@@ -22,12 +22,6 @@ from beatport_collector.scanner import (
 
 logger = logging.getLogger(__name__)
 
-#: Album match that tolerates either side being a substring of the other.
-_ALBUM_SUBSTRING_SQL = (
-    "(normalized_album = ? OR ? LIKE '%' || normalized_album || '%' "
-    "OR normalized_album LIKE '%' || ? || '%')"
-)
-
 
 class Catalog:
     """Persistent SQLite catalog of music files with matching support.
@@ -278,7 +272,8 @@ class Catalog:
             return None
         return self._first_overlapping(
             "SELECT file_path, artist FROM tracks WHERE clean_title = ? AND "
-            + _ALBUM_SUBSTRING_SQL,
+            "(normalized_album = ? OR ? LIKE '%' || normalized_album || '%' "
+            "OR normalized_album LIKE '%' || ? || '%')",
             (q.clean, *self._album_args(q)),
             q,
         )
@@ -288,8 +283,8 @@ class Catalog:
             return None
         return self._one(
             "SELECT file_path FROM tracks WHERE REPLACE(clean_title, ' ', '') = ? AND "
-            + _ALBUM_SUBSTRING_SQL
-            + " LIMIT 1",
+            "(normalized_album = ? OR ? LIKE '%' || normalized_album || '%' "
+            "OR normalized_album LIKE '%' || ? || '%') LIMIT 1",
             (q.condensed, *self._album_args(q)),
         )
 
@@ -298,7 +293,8 @@ class Catalog:
             return None
         return self._first_overlapping(
             "SELECT file_path, artist, clean_title FROM tracks WHERE "
-            + _ALBUM_SUBSTRING_SQL,
+            "(normalized_album = ? OR ? LIKE '%' || normalized_album || '%' "
+            "OR normalized_album LIKE '%' || ? || '%')",
             self._album_args(q),
             q,
             extra=lambda r: (
@@ -313,7 +309,8 @@ class Catalog:
         threshold = max(2, len(q.clean) // 5)
         return self._first_overlapping(
             "SELECT file_path, artist, clean_title FROM tracks WHERE "
-            + _ALBUM_SUBSTRING_SQL,
+            "(normalized_album = ? OR ? LIKE '%' || normalized_album || '%' "
+            "OR normalized_album LIKE '%' || ? || '%')",
             self._album_args(q),
             q,
             extra=lambda r: (
@@ -328,7 +325,8 @@ class Catalog:
             return None
         return self._first_overlapping(
             "SELECT file_path, artist, clean_title FROM tracks WHERE "
-            + _ALBUM_SUBSTRING_SQL,
+            "(normalized_album = ? OR ? LIKE '%' || normalized_album || '%' "
+            "OR normalized_album LIKE '%' || ? || '%')",
             self._album_args(q),
             q,
             extra=lambda r: (
