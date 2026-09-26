@@ -5,7 +5,6 @@ from __future__ import annotations
 import csv
 import logging
 import os
-import urllib.parse
 from collections import defaultdict
 from datetime import datetime
 from xml.dom import minidom
@@ -30,17 +29,10 @@ def _extm3u_entry(filepath: str, title: str, artists: str) -> str:
 
 
 def _windows_path_to_file_uri(path: str) -> str:
-    path = os.path.normpath(path)
-    parts = path.split(os.sep)
-    cleaned = []
-    for p in parts:
-        if p and p.endswith(":"):
-            p = p.lower()
-        cleaned.append(urllib.parse.quote(p, safe="/\\"))
-    uri_path = "/".join(cleaned)
-    if uri_path.startswith("/"):
-        uri_path = uri_path.lstrip("/")
-    return f"file://localhost/{uri_path}"
+    """Legacy wrapper — canonical implementation lives in paths."""
+    from beatport_collector.paths import file_uri_for_windows_path
+
+    return file_uri_for_windows_path(path)
 
 
 def create_playlists(

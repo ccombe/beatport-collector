@@ -18,85 +18,25 @@ backoff on 429/5xx (max 5 retries).
 from __future__ import annotations
 
 import logging
-import random
-import threading
-import time
 import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any
 
-import requests
-
-from beatport_collector.config import TIMEOUT, USER_AGENT
+from beatport_collector.http_client import BeatportClient, jittered_sleep
 
 logger = logging.getLogger(__name__)
 
 CATALOG_TRACKS_URL = "https://api.beatport.com/v4/catalog/tracks/"
 SEARCH_DELAY_SECONDS = 2.0
-MAX_RETRIES = 5
-# Global request gate shared by all worker threads: at most one catalog
-# HTTP call every MIN_GAP_SECONDS, on top of each worker's own
-# SEARCH_DELAY_SECONDS pause. Keeps 4 workers polite (~2 req/s peak).
-MIN_GAP_SECONDS = 0.5
-_GATE_LOCK = threading.Lock()
-_LAST_CALL = 0.0
-
-
-def _headers(token: str) -> dict[str, str]:
-    return {
-        "Accept": "application/json",
-        "Authorization": f"Bearer {token}",
-        "User-Agent": USER_AGENT,
-    }
 
 
 def _sleep_with_jitter(base: float = SEARCH_DELAY_SECONDS) -> None:
-    time.sleep(random.uniform(base * 0.5, base * 1.5))
+    jittered_sleep(base)
 
 
 def _get_with_backoff(url: str, token: str) -> dict[str, Any]:
-    """GET with a global inter-request gap + Retry-After/exponential backoff.
-
-    Thread-safe: the module-level gate serialises the gap calculation so
-    N workers never burst the API, while responses stream back in parallel.
-    """
-    global _LAST_CALL
-    backoff = 2.0
-    for attempt in range(MAX_RETRIES + 1):
-        with _GATE_LOCK:
-            gap = MIN_GAP_SECONDS - (time.monotonic() - _LAST_CALL)
-            if gap > 0:
-                time.sleep(gap)
-            try:
-                resp = requests.get(url, headers=_headers(token), timeout=TIMEOUT)
-            except requests.RequestException as e:
-                _LAST_CALL = time.monotonic()
-                if attempt >= MAX_RETRIES:
-                    raise
-                logger.warning(
-                    "Catalog request failed (%s), retry in %.0fs", e, backoff
-                )
-                time.sleep(backoff)
-                backoff = min(backoff * 2, 60.0)
-                continue
-            _LAST_CALL = time.monotonic()
-        if resp.status_code == 429 or 500 <= resp.status_code < 600:
-            retry_after = resp.headers.get("Retry-After")
-            wait = float(retry_after) if retry_after else backoff
-            if attempt >= MAX_RETRIES:
-                resp.raise_for_status()
-            logger.warning(
-                "Catalog %d, backing off %.0fs (attempt %d)",
-                resp.status_code,
-                wait,
-                attempt + 1,
-            )
-            time.sleep(wait)
-            backoff = min(backoff * 2, 60.0)
-            continue
-        resp.raise_for_status()
-        return resp.json()
-    raise RuntimeError("Catalog request exhausted retries")
+    """GET via the shared polite client (gap + backoff owned there)."""
+    return BeatportClient(token).get(url)
 
 
 @dataclass
@@ -161,6 +101,86 @@ class CatalogTrack:
             length_ms=int(data.get("length_ms", 0) or 0),
             raw=data,
         )
+
+    def to_cache(self) -> dict[str, object]:
+        """Serializable snapshot of everything apply needs (no re-fetch)."""
+        return {
+            "id": self.id,
+            "name": self.name,
+            "mix_name": self.mix_name,
+            "artists": self.artists,
+            "genre": self.genre,
+            "sub_genre": self.sub_genre,
+            "label": self.label,
+            "release_name": self.release_name,
+            "release_id": self.release_id,
+            "publish_date": self.publish_date,
+            "bpm": self.bpm,
+            "key_name": self.key_name,
+            "isrc": self.isrc,
+            "catalog_number": self.catalog_number,
+            "artwork_url": self.artwork_url,
+            "length_ms": self.length_ms,
+        }
+
+    @classmethod
+    def from_cache(cls, data: dict[str, object]) -> CatalogTrack:
+        """Rebuild from a cached snapshot (tolerates loose JSON types)."""
+
+        def _int(key: str) -> int:
+            val = data.get(key, 0)
+            if isinstance(val, bool):
+                return int(val)
+            if isinstance(val, (int, float, str)):
+                try:
+                    return int(val)
+                except (ValueError, TypeError):
+                    return 0
+            return 0
+
+        def _str(key: str) -> str:
+            val = data.get(key, "")
+            return val if isinstance(val, str) else ("" if val is None else str(val))
+
+        return cls(
+            id=_int("id"),
+            name=_str("name"),
+            mix_name=_str("mix_name"),
+            artists=_str("artists"),
+            genre=_str("genre"),
+            sub_genre=_str("sub_genre"),
+            label=_str("label"),
+            release_name=_str("release_name"),
+            release_id=_int("release_id"),
+            publish_date=_str("publish_date"),
+            bpm=_int("bpm"),
+            key_name=_str("key_name"),
+            isrc=_str("isrc"),
+            catalog_number=_str("catalog_number"),
+            artwork_url=_str("artwork_url"),
+            length_ms=_int("length_ms"),
+        )
+
+    def display_title(self) -> str:
+        """File-ready title: 'Name (Mix)' or plain 'Name'."""
+        return self.name + (f" ({self.mix_name})" if self.mix_name else "")
+
+    def to_tag_updates(self) -> dict[str, str]:
+        """Beatport data as tagger frame updates (the mapping lives here).
+
+        Knows the genre rule (sub-genre wins), the date truncation, and
+        the title composition — callers never assemble these by hand.
+        """
+        return {
+            "title": self.display_title(),
+            "album": self.release_name,
+            "genre": self.sub_genre or self.genre,
+            "date": (self.publish_date or "")[:10],
+            "bpm": str(self.bpm) if self.bpm else "",
+            "key": self.key_name,
+            "label": self.label,
+            "isrc": self.isrc,
+        }
 
 
 def search_tracks(

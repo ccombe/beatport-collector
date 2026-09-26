@@ -23,6 +23,10 @@ from dataclasses import dataclass
 import requests
 
 from beatport_collector import catalog_api, tagger
+from beatport_collector.paths import (  # noqa: F401 - re-exported for callers/tests
+    windows_to_wsl,
+    wsl_to_windows,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,26 +56,6 @@ def clean_query(title: str) -> str:
 
 def file_needs_enrichment(path: str) -> tuple[bool, list[str]]:
     return tagger.is_missing_key_tags(path)
-
-
-def wsl_to_windows(path: str) -> str:
-    """Map /mnt/c/... back to C:\\... for reporting (foobar uses file://)."""
-    if path.startswith("/mnt/"):
-        drive = path[5].upper()
-        rest = path[6:].replace("/", "\\")
-        return f"{drive}:{rest}"
-    return path
-
-
-def windows_to_wsl(path: str) -> str:
-    """Map file://C:\\... or C:\\... to /mnt/c/... for local writes."""
-    p = path
-    p = p.removeprefix("file://")
-    p = p.replace("\\", "/")
-    m = re.match(r"^([A-Za-z]):/(.*)$", p)
-    if m:
-        return f"/mnt/{m.group(1).lower()}/{m.group(2)}"
-    return p
 
 
 def _file_duration_ms(path: str) -> int | None:
@@ -143,17 +127,7 @@ def _enrich_one(
         return EnrichResult(path, artist, title, status="error")
     if not best:
         return EnrichResult(path, artist, title, status=reason)
-    bp_title = best.name + (f" ({best.mix_name})" if best.mix_name else "")
-    bp_tags = {
-        "title": bp_title,
-        "album": best.release_name,
-        "genre": best.sub_genre or best.genre,
-        "date": (best.publish_date or "")[:10],
-        "bpm": str(best.bpm) if best.bpm else "",
-        "key": best.key_name,
-        "label": best.label,
-        "isrc": best.isrc,
-    }
+    bp_tags = best.to_tag_updates()
     plan = tagger.plan_updates(
         path,
         bp_tags,
@@ -267,67 +241,6 @@ def enrich_many(
     return out
 
 
-def track_to_cache(best: catalog_api.CatalogTrack) -> dict[str, object]:
-    """Serializable snapshot of everything apply needs (no re-fetch)."""
-    return {
-        "id": best.id,
-        "name": best.name,
-        "mix_name": best.mix_name,
-        "artists": best.artists,
-        "genre": best.genre,
-        "sub_genre": best.sub_genre,
-        "label": best.label,
-        "release_name": best.release_name,
-        "release_id": best.release_id,
-        "publish_date": best.publish_date,
-        "bpm": best.bpm,
-        "key_name": best.key_name,
-        "isrc": best.isrc,
-        "catalog_number": best.catalog_number,
-        "artwork_url": best.artwork_url,
-        "length_ms": best.length_ms,
-    }
-
-
-def _cache_int(data: dict[str, object], key: str) -> int:
-    val = data.get(key, 0)
-    if isinstance(val, bool):
-        return int(val)
-    if isinstance(val, (int, float, str)):
-        try:
-            return int(val)
-        except (ValueError, TypeError):
-            return 0
-    return 0
-
-
-def _cache_str(data: dict[str, object], key: str) -> str:
-    val = data.get(key, "")
-    return val if isinstance(val, str) else ("" if val is None else str(val))
-
-
-def track_from_cache(data: dict[str, object]) -> catalog_api.CatalogTrack:
-    """Rebuild a CatalogTrack from a cached snapshot."""
-    return catalog_api.CatalogTrack(
-        id=_cache_int(data, "id"),
-        name=_cache_str(data, "name"),
-        mix_name=_cache_str(data, "mix_name"),
-        artists=_cache_str(data, "artists"),
-        genre=_cache_str(data, "genre"),
-        sub_genre=_cache_str(data, "sub_genre"),
-        label=_cache_str(data, "label"),
-        release_name=_cache_str(data, "release_name"),
-        release_id=_cache_int(data, "release_id"),
-        publish_date=_cache_str(data, "publish_date"),
-        bpm=_cache_int(data, "bpm"),
-        key_name=_cache_str(data, "key_name"),
-        isrc=_cache_str(data, "isrc"),
-        catalog_number=_cache_str(data, "catalog_number"),
-        artwork_url=_cache_str(data, "artwork_url"),
-        length_ms=_cache_int(data, "length_ms"),
-    )
-
-
 def apply_match(
     path: str,
     artist: str,
@@ -338,17 +251,7 @@ def apply_match(
     art_overwrite: bool = False,
 ) -> EnrichResult:
     """Plan (and optionally apply) a resolved match — no catalog API calls."""
-    bp_title = best.name + (f" ({best.mix_name})" if best.mix_name else "")
-    bp_tags = {
-        "title": bp_title,
-        "album": best.release_name,
-        "genre": best.sub_genre or best.genre,
-        "date": (best.publish_date or "")[:10],
-        "bpm": str(best.bpm) if best.bpm else "",
-        "key": best.key_name,
-        "label": best.label,
-        "isrc": best.isrc,
-    }
+    bp_tags = best.to_tag_updates()
     plan = tagger.plan_updates(
         path,
         bp_tags,

@@ -1,4 +1,4 @@
-"""Safe additive-only ID3v2.4 tag enrichment for MP3 files.
+"""Safe additive-only ID3v2.3 tag enrichment for MP3 files.
 
 Safety model (no audio corruption, no tag loss by design):
   - MP3 only (skip anything else — FLAC/Vorbis need a different writer).
@@ -34,7 +34,6 @@ import shutil
 import tempfile
 from dataclasses import dataclass, field
 
-import requests
 from mutagen.id3 import (
     APIC,
     ID3,
@@ -237,19 +236,10 @@ def plan_updates(
 
 
 def _fetch_artwork(url: str, timeout: int = 30) -> tuple[bytes, str] | None:
-    try:
-        r = requests.get(
-            url, timeout=timeout, headers={"User-Agent": "beatport-collector/0.2.0"}
-        )
-        r.raise_for_status()
-        ctype = r.headers.get("Content-Type", "image/jpeg").split(";")[0]
-        if "image" not in ctype:
-            logger.warning("Artwork URL did not return an image: %s", ctype)
-            return None
-        return r.content, ctype
-    except Exception as e:  # noqa: BLE001 - network flakiness must not crash enrichment
-        logger.warning("Artwork download failed: %s", e)
-        return None
+    """Thin wrapper — canonical fetch lives in http_client (test seam)."""
+    from beatport_collector.http_client import fetch_artwork
+
+    return fetch_artwork(url, timeout=timeout)
 
 
 def apply_plan(plan: TagPlan, dry_run: bool = True, v2_version: int = 3) -> dict:

@@ -155,6 +155,68 @@ class TestMatchTracksToFiles:
         _augmented, matched, _ = match_tracks_to_files(rows, catalog)
         assert matched == 1
 
+    @staticmethod
+    def _entry(path: str, artist: str, album: str, title: str) -> dict[str, str]:
+        return {
+            "File Path": path,
+            "Artist": artist,
+            "Album": album,
+            "Title": title,
+            "ISRC": "",
+            "Track Number": "",
+            "Album Artist": "",
+            "Genre": "",
+            "Date": "",
+            "Duration": "",
+            "File Size": "1000",
+        }
+
+    @staticmethod
+    def _row(artists: str, title: str, release: str) -> dict[str, str]:
+        return {
+            "ISRC": "",
+            "Artists": artists,
+            "Title": title,
+            "Release Title": release,
+        }
+
+    def test_strategy8_condensed(self) -> None:
+        rows = [self._row("A1", "Bbc 1", "Album")]
+        catalog = [self._entry("/a.mp3", "A1", "Album", "Bbc1")]
+        _, matched, _ = match_tracks_to_files(rows, catalog)
+        assert matched == 1
+
+    def test_strategy9_album_substring(self) -> None:
+        rows = [self._row("A1", "Song", "Album Deluxe Edition")]
+        catalog = [self._entry("/a.mp3", "A1", "Album", "Song")]
+        _, matched, _ = match_tracks_to_files(rows, catalog)
+        assert matched == 1
+
+    def test_strategy11_prefix_either_way(self) -> None:
+        rows = [self._row("A1", "Song Extended", "Album")]
+        catalog = [self._entry("/a.mp3", "A1", "Album", "Song")]
+        _, matched, _ = match_tracks_to_files(rows, catalog)
+        assert matched == 1
+
+    def test_strategy12_levenshtein(self) -> None:
+        rows = [self._row("A1", "Sensation", "Album")]
+        catalog = [self._entry("/a.mp3", "A1", "Album", "Sensasion")]
+        _, matched, _ = match_tracks_to_files(rows, catalog)
+        assert matched == 1
+
+    def test_strategy13_contains(self) -> None:
+        rows = [self._row("A1", "Midnight City Lights", "Album")]
+        catalog = [self._entry("/a.mp3", "A1", "Album", "City")]
+        _, matched, _ = match_tracks_to_files(rows, catalog)
+        assert matched == 1
+
+    def test_no_false_positive_across_albums(self) -> None:
+        rows = [self._row("A1", "Other Song", "Totally Different")]
+        catalog = [self._entry("/a.mp3", "A1", "Album", "Song")]
+        _, matched, unmatched = match_tracks_to_files(rows, catalog)
+        assert matched == 0
+        assert unmatched == 1
+
     def test_matched_csv_fields_present(self) -> None:
         rows = [
             {

@@ -3,36 +3,24 @@
 from __future__ import annotations
 
 import logging
-import random
-import time
 from collections.abc import Callable
 from typing import Any
 
 import requests
 
-from beatport_collector.config import (
-    DEFAULT_PER_PAGE,
-    DOWNLOADS_ENDPOINT,
-    TIMEOUT,
-    USER_AGENT,
-)
+from beatport_collector.config import DEFAULT_PER_PAGE, DOWNLOADS_ENDPOINT
+from beatport_collector.http_client import BeatportClient, jittered_sleep
 from beatport_collector.types import DownloadPage, Track
 
+__all__ = [
+    "BeatportClient",
+    "fetch_all_downloads",
+    "fetch_downloads_page",
+    "jittered_sleep",
+    "parse_downloads_page",
+]
+
 logger = logging.getLogger(__name__)
-
-
-def jittered_sleep(base: float, jitter: float = 0.5) -> None:
-    """Sleep for base ± jitter*base seconds, randomized."""
-    delta = base * jitter
-    time.sleep(random.uniform(base - delta, base + delta))
-
-
-def _headers(token: str) -> dict[str, str]:
-    return {
-        "Accept": "application/json",
-        "Authorization": f"Bearer {token}",
-        "User-Agent": USER_AGENT,
-    }
 
 
 def fetch_downloads_page(
@@ -40,16 +28,12 @@ def fetch_downloads_page(
     page_number: int = 1,
     per_page: int = DEFAULT_PER_PAGE,
 ) -> dict[str, Any] | None:
-    """Fetch a single page from the /v4/my/downloads/ API."""
+    """Fetch a single page from the /v4/my/downloads/ API (None on failure)."""
     url = f"{DOWNLOADS_ENDPOINT}?page={page_number}&per_page={per_page}"
     try:
-        resp = requests.get(url, headers=_headers(token), timeout=TIMEOUT)
-        if not resp.ok:
-            logger.warning("API returned %d for page %d", resp.status_code, page_number)
-            return None
-        return resp.json()
+        return BeatportClient(token).get(url)
     except requests.RequestException as e:
-        logger.warning("Request failed for page %d: %s", page_number, e)
+        logger.warning("API failed for page %d: %s", page_number, e)
         return None
 
 

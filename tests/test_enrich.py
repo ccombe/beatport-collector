@@ -44,6 +44,33 @@ class TestPickOldest:
         assert pick_oldest([]) is None
 
 
+class TestToTagUpdates:
+    def test_mapping_rules(self) -> None:
+        from beatport_collector.catalog_api import CatalogTrack
+
+        track = CatalogTrack(
+            id=1,
+            name="Apricots",
+            mix_name="Original Mix",
+            genre="Electronica",
+            sub_genre="Downtempo",
+            publish_date="2020-10-08T00:00:00",
+            bpm=128,
+            label="Ninja Tune",
+        )
+        updates = track.to_tag_updates()
+        assert updates["title"] == "Apricots (Original Mix)"
+        assert updates["genre"] == "Downtempo"  # sub-genre wins
+        assert updates["date"] == "2020-10-08"  # truncated
+        assert updates["bpm"] == "128"
+
+    def test_plain_title_without_mix(self) -> None:
+        from beatport_collector.catalog_api import CatalogTrack
+
+        track = CatalogTrack(id=2, name="Go", genre="House")
+        assert track.to_tag_updates()["title"] == "Go"
+
+
 class TestPickBest:
     def test_duration_then_oldest(self) -> None:
         tracks = [
@@ -79,11 +106,9 @@ class TestCacheRoundTrip:
     def test_snapshot_survives_json(self) -> None:
         import json
 
-        from beatport_collector.enrich import track_from_cache, track_to_cache
-
         track = _make_track(7, "2020-10-08", "Apricots", length_ms=246_500)
-        snap = json.loads(json.dumps(track_to_cache(track)))
-        back = track_from_cache(snap)
+        snap = json.loads(json.dumps(track.to_cache()))
+        back = CatalogTrack.from_cache(snap)
         assert back.id == 7
         assert back.publish_date == "2020-10-08"
         assert back.length_ms == 246_500

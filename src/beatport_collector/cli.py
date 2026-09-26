@@ -18,13 +18,13 @@ load_dotenv()
 from beatport_collector.api import (
     fetch_all_downloads,
     fetch_downloads_page,
-    jittered_sleep,
     parse_downloads_page,
 )
 from beatport_collector.config import (
     DEFAULT_OUTPUT_DIR,
     MAX_PAGES_PER_SESSION,
 )
+from beatport_collector.http_client import jittered_sleep
 from beatport_collector.playlist import create_playlists
 from beatport_collector.scanner import create_catalog_db
 from beatport_collector.scanner import scan as run_scan
@@ -204,6 +204,65 @@ def run_scan_and_playlist(
         )
         for name, path in sorted(created.items()):
             print(f"  {name}: {path}")
+
+
+def _get_token(args: Any) -> str:
+    """OAuth access token from args or interactive prompt."""
+    username, password = args.username, args.password
+    if not username or not password:
+        username, password = _prompt_credentials()
+    return oauth_login(username, password).access_token
+
+
+def _progress_printer(t0: float, total: int):
+    """DJ-booth progress view: bar, VU, spinner, now-spinning line.
+
+    Returns (callback, state) where state tracks updated/last counts.
+    """
+    import time
+    from collections import Counter
+
+    counts: Counter[str] = Counter()
+    state: dict[str, Any] = {"updated": 0, "last_spin": ""}
+
+    VU = "▁▂▃▄▅▆▇█"
+    spin = ["◐", "◑", "◒", "◓"]
+
+    def bar(n: int, total: int, width: int = 28) -> str:
+        filled = int(width * n / max(total, 1))
+        return f"[{'█' * filled}{'░' * (width - filled)}]"
+
+    def cb(r: Any, n: int, t: int) -> None:
+        counts[r.status] += 1
+        if (
+            r.status == "matched"
+            and r.applied is not None
+            and (r.applied.get("updated") or r.applied.get("artwork_embedded"))
+        ):
+            state["updated"] = int(state["updated"]) + 1
+        if r.status == "matched":
+            state["last_spin"] = f"{r.artist} - {r.title}"
+        if n % 10 == 0 or n == t:
+            el = time.monotonic() - t0
+            rate = n / max(el, 1)
+            eta = (t - n) / max(rate, 0.01)
+            pct = 100 * n / max(t, 1)
+            vu = VU[min(int(pct / 100 * (len(VU) - 1)), len(VU) - 1)]
+            glyph = spin[(n // 10) % len(spin)]
+            print(
+                f"  {glyph} ♪ {bar(n, t)} {n}/{t} ({pct:.0f}%) {vu} "
+                f"updated={state['updated']} matched={counts['matched']} "
+                f"ambig={counts['ambiguous']} nomatch={counts['no-candidates']} "
+                f"skip={counts['skipped']} err={counts['error']} "
+                f"| {el / 60:.0f}m in ~{eta / 60:.0f}m left",
+                flush=True,
+            )
+            if state["last_spin"]:
+                last = state["last_spin"]
+                assert isinstance(last, str)
+                print(f"    now spinning: {last[:90]}", flush=True)
+
+    return cb, state
 
 
 def main() -> None:
@@ -498,262 +557,61 @@ def main() -> None:
                 print(f"  {r.status.upper()} {r.artist} - {r.title} ({r.path})")
 
     elif args.command == "batch":
-        import json
         import time
-        from collections import Counter
 
-        from beatport_collector.enrich import enrich_many
+        from beatport_collector.batch_runner import load_manifest, run
 
-        if not os.path.exists(args.input_json):
-            print(f"File not found: {args.input_json}")
-            sys.exit(1)
-        with open(args.input_json, encoding="utf-8") as f:
-            entries = json.load(f)
-        done: set[str] = set()
-        if os.path.exists(args.progress):
-            with open(args.progress, encoding="utf-8") as f:
-                for line in f:
-                    try:
-                        done.add(json.loads(line).get("path", ""))
-                    except (json.JSONDecodeError, AttributeError):
-                        continue
-        todo = [e["path"] for e in entries if e.get("path") not in done]
+        manifest = load_manifest(args.input_json)
         if args.limit:
-            todo = todo[: args.limit]
-        total = len(todo)
-        print(f"  {total} files to process ({len(done)} already done)")
-        if total == 0:
-            return
-        username, password = args.username, args.password
-        if not username or not password:
-            username, password = _prompt_credentials()
-        token = oauth_login(username, password)
-        workers = max(1, min(args.workers, 4))
-        counts: Counter[str] = Counter()
-        updated = 0
+            manifest = manifest[: args.limit]
+        token = _get_token(args)
+        total = len(manifest)
         t0 = time.monotonic()
-
-        def bar(n: int, total: int, width: int = 28) -> str:
-            filled = int(width * n / max(total, 1))
-            return f"[{'█' * filled}{'░' * (width - filled)}]"
-
-        VU = "▁▂▃▄▅▆▇█"
-        spin = ["◐", "◑", "◒", "◓"]
-
-        with open(args.progress, "a", encoding="utf-8") as log:
-            last_spin = ""
-
-            def on_progress(r, n: int, total: int) -> None:
-                nonlocal updated, last_spin
-                counts[r.status] += 1
-                if (
-                    r.status == "matched"
-                    and r.applied is not None
-                    and (r.applied.get("updated") or r.applied.get("artwork_embedded"))
-                ):
-                    updated += 1
-                if r.status == "matched":
-                    last_spin = f"{r.artist} - {r.title}"
-                log.write(
-                    json.dumps(
-                        {
-                            "path": r.path,
-                            "status": r.status,
-                            "beatport_id": r.beatport_id,
-                            "applied": r.applied,
-                        }
-                    )
-                    + "\n"
-                )
-                if n % 10 == 0 or n == total:
-                    log.flush()
-                    el = time.monotonic() - t0
-                    rate = n / max(el, 1)
-                    eta = (total - n) / max(rate, 0.01)
-                    pct = 100 * n / max(total, 1)
-                    vu = VU[min(int(pct / 100 * (len(VU) - 1)), len(VU) - 1)]
-                    glyph = spin[(n // 10) % len(spin)]
-                    print(
-                        f"  {glyph} ♪ {bar(n, total)} {n}/{total} ({pct:.0f}%) {vu} "
-                        f"updated={updated} matched={counts['matched']} "
-                        f"ambig={counts['ambiguous']} nomatch={counts['no-candidates']} "
-                        f"skip={counts['skipped']} err={counts['error']} "
-                        f"| {el / 60:.0f}m in ~{eta / 60:.0f}m left",
-                        flush=True,
-                    )
-                    if last_spin:
-                        print(f"    now spinning: {last_spin[:90]}", flush=True)
-
-            enrich_many(
-                token.access_token,
-                todo,
-                dry_run=not args.apply,
-                overwrite=args.overwrite,
-                art_overwrite=args.art_overwrite,
-                delay=args.delay,
-                workers=workers,
-                progress_cb=on_progress,
-            )
+        cb, state = _progress_printer(t0, total)
+        counts = run(
+            manifest,
+            token,
+            apply_tags=args.apply,
+            progress_path=args.progress,
+            delay=args.delay,
+            workers=args.workers,
+            art_overwrite=args.art_overwrite,
+            progress_cb=cb,
+        )
         el = time.monotonic() - t0
         print(
-            f"  DONE {total} files in {el / 60:.1f}m: updated={updated} "
-            f"matched={counts['matched']} ambiguous={counts['ambiguous']} "
-            f"no-match={counts['no-candidates']} skipped={counts['skipped']} "
-            f"errors={counts['error']}"
+            f"  DONE {total} files in {el / 60:.1f}m: "
+            f"updated={state['updated']} {dict(counts)}"
         )
 
     elif args.command == "apply":
-        import json
         import time
-        from collections import Counter
-        from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        from beatport_collector import catalog_api
-        from beatport_collector.enrich import (
-            EnrichResult,
-            apply_match,
-            track_from_cache,
-            track_to_cache,
-        )
+        from beatport_collector.batch_runner import load_matched, run
 
-        if not os.path.exists(args.match_jsonl):
-            print(f"File not found: {args.match_jsonl}")
-            sys.exit(1)
-        matched_rows = []
-        with open(args.match_jsonl, encoding="utf-8") as f:
-            for line in f:
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if row.get("status") == "matched" and row.get("beatport_id"):
-                    matched_rows.append(row)
-        done: set[str] = set()
-        if os.path.exists(args.progress):
-            with open(args.progress, encoding="utf-8") as f:
-                for line in f:
-                    try:
-                        done.add(json.loads(line).get("path", ""))
-                    except (json.JSONDecodeError, AttributeError):
-                        continue
-        todo = [r for r in matched_rows if r.get("path") not in done]
+        manifest = load_matched(args.match_jsonl)
         if args.limit:
-            todo = todo[: args.limit]
-        total = len(todo)
-        print(f"  {total} matched files to apply ({len(done)} already done)")
-        if total == 0:
-            return
-        username, password = args.username, args.password
-        if not username or not password:
-            username, password = _prompt_credentials()
-        token = oauth_login(username, password)
-
-        # Step 1: fetch each UNIQUE track once (dups share), cached on disk.
-        cache: dict[str, dict[str, object]] = {}
-        if os.path.exists(args.cache):
-            with open(args.cache, encoding="utf-8") as f:
-                cache = json.load(f)
-        need = sorted(
-            {str(r["beatport_id"]) for r in todo if str(r["beatport_id"]) not in cache}
+            manifest = manifest[: args.limit]
+        token = _get_token(args)
+        total = len(manifest)
+        t0 = time.monotonic()
+        cb, state = _progress_printer(t0, total)
+        counts = run(
+            manifest,
+            token,
+            apply_tags=True,
+            progress_path=args.progress,
+            cache_path=args.cache,
+            delay=args.delay,
+            workers=args.workers,
+            art_overwrite=args.art_overwrite,
+            progress_cb=cb,
         )
-        print(f"  fetching {len(need)} unique track details (cached {len(cache)})...")
-        workers = max(1, min(args.workers, 4))
-        t0 = time.monotonic()
-
-        def _fetch(tid: str) -> tuple[str, dict[str, object] | None]:
-            try:
-                track = catalog_api.fetch_track_detail(token.access_token, int(tid))
-                catalog_api._sleep_with_jitter(args.delay)
-                return tid, track_to_cache(track)
-            except Exception as e:  # noqa: BLE001 - one bad id must not kill the run
-                logger.warning("Detail fetch failed for %s: %s", tid, e)
-                return tid, None
-
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            for tid, snap in pool.map(_fetch, need):
-                if snap is not None:
-                    cache[tid] = snap
-        with open(args.cache, "w", encoding="utf-8") as f:
-            json.dump(cache, f)
-        print(f"  cache ready: {len(cache)} tracks in {time.monotonic() - t0:.0f}s")
-
-        # Step 2: apply locally (only artwork downloads hit the network).
-        counts: Counter[str] = Counter()
-        updated = 0
-        t0 = time.monotonic()
-        spin = ["◐", "◑", "◒", "◓"]
-        VU = "▁▂▃▄▅▆▇█"
-
-        def bar(n: int, total: int, width: int = 28) -> str:
-            filled = int(width * n / max(total, 1))
-            return f"[{'█' * filled}{'░' * (width - filled)}]"
-
-        with open(args.progress, "a", encoding="utf-8") as log:
-            n_done = 0
-
-            def _apply_one(
-                row: dict,
-            ) -> EnrichResult:
-                snap = cache.get(str(row["beatport_id"]))
-                if snap is None:
-                    return EnrichResult(row.get("path", ""), "", "", status="error")
-                best = track_from_cache(snap)
-                # Re-read current tags for artist/title (fresh, additive-safe).
-                from beatport_collector import tagger
-
-                cur = tagger.current_tags(row["path"])
-                return apply_match(
-                    row["path"],
-                    cur.get("artist", ""),
-                    cur.get("title", ""),
-                    best,
-                    dry_run=False,
-                    art_overwrite=args.art_overwrite,
-                )
-
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                futs = {pool.submit(_apply_one, r): r for r in todo}
-                for fut in as_completed(futs):
-                    n_done += 1
-                    try:
-                        r = fut.result()
-                    except Exception as e:  # noqa: BLE001 - one bad file must not kill the batch
-                        logger.warning("Apply failed: %s", e)
-                        counts["error"] += 1
-                        continue
-                    counts["applied" if r.applied else r.status] += 1
-                    if r.applied is not None and (
-                        r.applied.get("updated") or r.applied.get("artwork_embedded")
-                    ):
-                        updated += 1
-                    log.write(
-                        json.dumps(
-                            {
-                                "path": r.path,
-                                "status": r.status,
-                                "beatport_id": r.beatport_id,
-                                "applied": r.applied,
-                            }
-                        )
-                        + "\n"
-                    )
-                    if n_done % 10 == 0 or n_done == total:
-                        log.flush()
-                        el = time.monotonic() - t0
-                        rate = n_done / max(el, 1)
-                        eta = (total - n_done) / max(rate, 0.01)
-                        pct = 100 * n_done / max(total, 1)
-                        vu = VU[min(int(pct / 100 * (len(VU) - 1)), len(VU) - 1)]
-                        glyph = spin[(n_done // 10) % len(spin)]
-                        print(
-                            f"  {glyph} ♪ {bar(n_done, total)} {n_done}/{total} "
-                            f"({pct:.0f}%) {vu} updated={updated} "
-                            f"err={counts['error']} "
-                            f"| {el / 60:.0f}m in ~{eta / 60:.0f}m left",
-                            flush=True,
-                        )
         el = time.monotonic() - t0
-        print(f"  DONE {total} files in {el / 60:.1f}m: updated={updated}")
+        print(
+            f"  DONE {total} files in {el / 60:.1f}m: "
+            f"updated={state['updated']} {dict(counts)}"
+        )
 
 
 if __name__ == "__main__":

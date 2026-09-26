@@ -284,12 +284,21 @@ def match_tracks_to_files(
 ) -> tuple[list[dict[str, str]], int, int]:
     """Match purchase CSV rows to catalog entries.
 
-    Matching strategy (in priority order):
+    Matching strategies in priority order (mirrors Catalog._match_single,
+    so the in-memory and SQLite paths agree by construction):
       1. ISRC (exact)
       2. Normalised album + artist + title
       3. Normalised album + clean_title
-      4. Normalised artist + clean_title
-      5. Normalised clean_title (any artist match)
+      4. Normalised artist + clean_title (also first artist)
+      5. Normalised clean_title (any artist)
+      6. Album + purchase title is a prefix of the file title
+      7. Artist + purchase title is a prefix of the file title
+      8. Condensed titles (spaces removed)
+      9. Album substring + clean_title + artist overlap
+      10. Condensed + album substring
+      11. Album substring + title prefix either way + artist overlap
+      12. Album substring + Levenshtein distance + artist overlap
+      13. Album substring + title contains either way + artist overlap
 
     Returns (augmented_rows, matched_count, unmatched_count).
     """
@@ -298,6 +307,8 @@ def match_tracks_to_files(
     by_album_clean_title: dict[tuple[str, str], list[dict[str, str]]] = {}
     by_artist_clean_title: dict[tuple[str, str], list[dict[str, str]]] = {}
     by_clean_title: dict[str, list[dict[str, str]]] = {}
+    # Flat rows with precomputed keys for the substring/fuzzy strategies.
+    flat: list[tuple[dict[str, str], str, str, str, str]] = []
 
     for entry in catalog:
         isrc = entry.get("ISRC", "").strip()
@@ -307,6 +318,15 @@ def match_tracks_to_files(
         cat_artist = _norm_artist(entry.get("Artist", ""))
         cat_album = normalize(entry.get("Album", ""))
         cat_clean_title = clean_title(entry.get("Title", ""))
+        flat.append(
+            (
+                entry,
+                cat_artist,
+                cat_album,
+                cat_clean_title,
+                cat_clean_title.replace(" ", ""),
+            )
+        )
 
         if cat_album and cat_clean_title:
             by_album_clean_title.setdefault((cat_album, cat_clean_title), []).append(
@@ -319,6 +339,9 @@ def match_tracks_to_files(
         if cat_clean_title:
             by_clean_title.setdefault(cat_clean_title, []).append(entry)
 
+    def _album_match(a: str, b: str) -> bool:
+        return a == b or b in a or a in b
+
     matched = 0
     unmatched = 0
     augmented: list[dict[str, str]] = []
@@ -329,6 +352,8 @@ def match_tracks_to_files(
         purchase_artist = _norm_artist(row.get("Artists", ""))
         purchase_album = normalize(row.get("Release Title", ""))
         purchase_clean = clean_title(row.get("Title", ""))
+        purchase_condensed = purchase_clean.replace(" ", "")
+        purchase_set = set(_parse_artists(purchase_artist))
 
         # Strategy 1: ISRC
         if purchase_isrc and purchase_isrc in by_isrc:
@@ -340,7 +365,6 @@ def match_tracks_to_files(
             if key in by_album_clean_title:
                 for entry in by_album_clean_title[key]:
                     entry_artist = _norm_artist(entry.get("Artist", ""))
-                    purchase_set = set(_parse_artists(purchase_artist))
                     entry_set = set(_parse_artists(entry_artist))
                     if _artists_overlap(purchase_set, entry_set):
                         local_path = entry.get("File Path", "")
@@ -389,6 +413,105 @@ def match_tracks_to_files(
                 matched_artist = artist == purchase_artist or artist == first
                 if matched_artist and ct.startswith(f"{purchase_clean} "):
                     local_path = entries[0].get("File Path", "")
+                    break
+
+        # Strategy 8: Condensed titles (spaces removed), album (+artist) scoped
+        if (
+            not local_path
+            and purchase_condensed
+            and purchase_condensed != purchase_clean
+        ):
+            if purchase_album and purchase_artist:
+                for entry, _, cat_album, _, cat_condensed in flat:
+                    if (
+                        cat_condensed != purchase_condensed
+                        or cat_album != purchase_album
+                    ):
+                        continue
+                    entry_set = set(
+                        _parse_artists(_norm_artist(entry.get("Artist", "")))
+                    )
+                    if _artists_overlap(purchase_set, entry_set):
+                        local_path = entry.get("File Path", "")
+                        break
+            if not local_path and purchase_album:
+                for entry, _, cat_album, _, cat_condensed in flat:
+                    if (
+                        cat_condensed == purchase_condensed
+                        and cat_album == purchase_album
+                    ):
+                        local_path = entry.get("File Path", "")
+                        break
+
+        # Strategy 9: Album substring + clean_title + artist overlap
+        if not local_path and purchase_album and purchase_clean and purchase_artist:
+            for entry, _, cat_album, cat_ct, _ in flat:
+                if cat_ct != purchase_clean or not _album_match(
+                    cat_album, purchase_album
+                ):
+                    continue
+                entry_set = set(_parse_artists(_norm_artist(entry.get("Artist", ""))))
+                if _artists_overlap(purchase_set, entry_set):
+                    local_path = entry.get("File Path", "")
+                    break
+
+        # Strategy 10: Condensed + album substring
+        if (
+            not local_path
+            and purchase_condensed
+            and purchase_condensed != purchase_clean
+            and purchase_album
+        ):
+            for entry, _, cat_album, _, cat_condensed in flat:
+                if cat_condensed != purchase_condensed:
+                    continue
+                if _album_match(cat_album, purchase_album):
+                    local_path = entry.get("File Path", "")
+                    break
+
+        # Strategy 11: Album substring + title prefix either way + overlap
+        if not local_path and purchase_album and purchase_clean and purchase_artist:
+            for entry, _, cat_album, cat_ct, _ in flat:
+                if not _album_match(cat_album, purchase_album):
+                    continue
+                if not (
+                    cat_ct.startswith(purchase_clean)
+                    or purchase_clean.startswith(cat_ct)
+                ):
+                    continue
+                entry_set = set(_parse_artists(_norm_artist(entry.get("Artist", ""))))
+                if _artists_overlap(purchase_set, entry_set):
+                    local_path = entry.get("File Path", "")
+                    break
+
+        # Strategy 12: Album substring + Levenshtein + artist overlap
+        if not local_path and purchase_album and purchase_clean and purchase_artist:
+            threshold = max(2, len(purchase_clean) // 5)
+            for entry, _, cat_album, cat_ct, _ in flat:
+                if not _album_match(cat_album, purchase_album):
+                    continue
+                if not cat_ct or abs(len(cat_ct) - len(purchase_clean)) > threshold:
+                    continue
+                entry_set = set(_parse_artists(_norm_artist(entry.get("Artist", ""))))
+                if (
+                    _artists_overlap(purchase_set, entry_set)
+                    and levenshtein(purchase_clean, cat_ct) <= threshold
+                ):
+                    local_path = entry.get("File Path", "")
+                    break
+
+        # Strategy 13: Album substring + title contains either way + overlap
+        if not local_path and purchase_album and purchase_clean and purchase_artist:
+            for entry, _, cat_album, cat_ct, _ in flat:
+                if not _album_match(cat_album, purchase_album):
+                    continue
+                if not cat_ct or not (
+                    purchase_clean in cat_ct or cat_ct in purchase_clean
+                ):
+                    continue
+                entry_set = set(_parse_artists(_norm_artist(entry.get("Artist", ""))))
+                if _artists_overlap(purchase_set, entry_set):
+                    local_path = entry.get("File Path", "")
                     break
 
         out = dict(row)
