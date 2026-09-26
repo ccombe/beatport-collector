@@ -34,6 +34,7 @@ import shutil
 import tempfile
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 from mutagen.mp3 import MP3
 
@@ -108,11 +109,35 @@ class TagPlan:
     art_overwrite: bool = False
 
 
-def _silent_unlink(path: str) -> None:
-    try:
-        os.unlink(path)
-    except OSError:
-        pass
+def _abort(path: str, reason: str, tmp_path: str, leftover: str) -> dict[str, Any]:
+    """Report an aborted write, naming any temp file we failed to remove."""
+    if leftover:
+        return {
+            "path": path,
+            "error": f"{reason} | TEMP NOT DELETED, remove {tmp_path} ({leftover})",
+        }
+    return {"path": path, "error": reason}
+
+
+def _silent_unlink(path: str) -> str:
+    """Delete a temp file, retrying the transient locks virtual drives throw.
+
+    Returns "" on success, else a short reason. The caller surfaces it: a
+    swallowed failure leaves a full-size audio file sitting in the user's
+    music folder, which is worse than a noisy log line.
+    """
+    reason = ""
+    for attempt in range(4):
+        try:
+            os.unlink(path)
+            return ""
+        except FileNotFoundError:
+            return ""
+        except OSError as e:
+            reason = f"{type(e).__name__}: {e}"
+            time.sleep(0.3 * (attempt + 1))
+    logger.warning("Could not remove temp file %s (%s)", path, reason)
+    return reason
 
 
 def _audio_length(path: str) -> float | None:
@@ -256,23 +281,23 @@ def apply_plan(plan: TagPlan, dry_run: bool = True, v2_version: int = 3) -> dict
     try:
         shutil.copyfile(plan.path, tmp_path)
     except Exception as e:  # noqa: BLE001 - copy failure must abort loudly, never silently
-        _silent_unlink(tmp_path)
-        return {"path": plan.path, "error": f"temp copy failed, aborting: {e}"}
+        leftover = _silent_unlink(tmp_path)
+        return _abort(plan.path, f"temp copy failed, aborting: {e}", tmp_path, leftover)
 
     adapter = backend_for(tmp_path)
     if adapter is None:  # guarded above; never happens, never silently passes
-        _silent_unlink(tmp_path)
-        return {"path": plan.path, "error": "unsupported container"}
+        leftover = _silent_unlink(tmp_path)
+        return _abort(plan.path, "unsupported container", tmp_path, leftover)
     try:
         pre_ids, pre_pics = adapter.post_ids(tmp_path)
     except Exception:  # noqa: BLE001 - unreadable temp aborts before touching original
-        _silent_unlink(tmp_path)
-        return {"path": plan.path, "error": "load failed: unreadable file"}
+        leftover = _silent_unlink(tmp_path)
+        return _abort(plan.path, "load failed: unreadable file", tmp_path, leftover)
     try:
         adapter.write_updates(tmp_path, dict(plan.updates), plan.overwrite)
     except Exception as e:  # noqa: BLE001 - write failure must not touch original
-        _silent_unlink(tmp_path)
-        return {"path": plan.path, "error": f"tag write failed: {e}"}
+        leftover = _silent_unlink(tmp_path)
+        return _abort(plan.path, f"tag write failed: {e}", tmp_path, leftover)
 
     art_ok = False
     if plan.will_embed_artwork and plan.artwork_url:
