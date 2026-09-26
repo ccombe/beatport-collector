@@ -1,0 +1,49 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # The library tooling is used from both Windows and WSL, so both
+        # platforms have to stay green.
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install project
+        run: uv sync --all-groups --frozen
+
+      - name: Lint (ruff)
+        run: uv run ruff check src/ tests/
+
+      - name: Format check (ruff)
+        run: uv run ruff format --check src/ tests/
+
+      - name: Types (ty)
+        run: uv run ty check src/ tests/
+
+      - name: Tests
+        # Tests needing a real music library or purchase CSV skip cleanly
+        # when BPC_LIBRARY_DIR is unset, so this is self-contained.
+        run: uv run pytest -q
