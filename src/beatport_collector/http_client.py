@@ -107,7 +107,10 @@ class BeatportClient:
                 BeatportClient._last_call = time.monotonic()
             if resp.status_code == 429 or 500 <= resp.status_code < 600:
                 retry_after = resp.headers.get("Retry-After")
-                wait = float(retry_after) if retry_after else backoff
+                try:
+                    wait = min(float(retry_after), 60.0) if retry_after else backoff
+                except (ValueError, TypeError):
+                    wait = backoff
                 if attempt >= self._max_retries:
                     resp.raise_for_status()
                 logger.warning(

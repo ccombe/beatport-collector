@@ -42,23 +42,25 @@ class MBMatch:
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
 
-def _polite_get(url: str) -> dict[str, Any]:
+def _polite_get(url: str, max_retries: int = 3) -> dict[str, Any]:
     global _LAST_CALL
-    with _GATE_LOCK:
-        gap = MIN_GAP_SECONDS - (time.monotonic() - _LAST_CALL)
-        if gap > 0:
-            time.sleep(gap)
-        resp = requests.get(
-            url,
-            headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
-            timeout=30,
-        )
-        _LAST_CALL = time.monotonic()
-    if resp.status_code == 503:
-        time.sleep(2.0)
-        return _polite_get(url)
-    resp.raise_for_status()
-    return resp.json()
+    for attempt in range(max_retries + 1):
+        with _GATE_LOCK:
+            gap = MIN_GAP_SECONDS - (time.monotonic() - _LAST_CALL)
+            if gap > 0:
+                time.sleep(gap)
+            resp = requests.get(
+                url,
+                headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+                timeout=30,
+            )
+            _LAST_CALL = time.monotonic()
+        if resp.status_code == 503 and attempt < max_retries:
+            time.sleep(2.0)
+            continue
+        resp.raise_for_status()
+        return resp.json()
+    raise requests.HTTPError(f"MusicBrainz 503 persisted for {url}")
 
 
 def search_recording(
