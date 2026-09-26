@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import logging
-import threading
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -25,6 +24,7 @@ from beatport_collector.enrich import (
     enrich_many,
 )
 from beatport_collector.http_client import jittered_sleep
+from beatport_collector.pooling import run_pool
 from beatport_collector.tagger import current_tags
 
 logger = logging.getLogger(__name__)
@@ -181,36 +181,34 @@ def run(
     total = len(todo)
     counts: Counter[str] = Counter()
     n_done = 0
-    report_lock = threading.Lock()
 
     def _report(r: EnrichResult) -> None:
-        # Thread-safe: also called directly from worker threads.
-        with report_lock:
-            nonlocal n_done
-            n_done += 1
-            if r.status == "matched" and r.applied is not None:
-                key = (
-                    "updated"
-                    if (r.applied.get("updated") or r.applied.get("artwork_embedded"))
-                    else "matched"
-                )
-            else:
-                key = r.status
-            counts[key] += 1
-            append_result(
-                progress_path,
-                {
-                    "path": r.path,
-                    "status": r.status,
-                    "beatport_id": r.beatport_id,
-                    "applied": r.applied,
-                    "source": r.source,
-                    "snapshot": r.snapshot,
-                },
+        # Runs on the calling thread only (pooling reports centrally), so
+        # counts and the progress log need no locking.
+        nonlocal n_done
+        n_done += 1
+        if r.status == "matched" and r.applied is not None:
+            key = (
+                "updated"
+                if (r.applied.get("updated") or r.applied.get("artwork_embedded"))
+                else "matched"
             )
-            snapshot_n = n_done
+        else:
+            key = r.status
+        counts[key] += 1
+        append_result(
+            progress_path,
+            {
+                "path": r.path,
+                "status": r.status,
+                "beatport_id": r.beatport_id,
+                "applied": r.applied,
+                "source": r.source,
+                "snapshot": r.snapshot,
+            },
+        )
         if progress_cb is not None:
-            progress_cb(r, snapshot_n, total)
+            progress_cb(r, n_done, total)
 
     if not apply_tags:
         for r in enrich_many(
@@ -224,50 +222,26 @@ def run(
             pass
         return counts
 
-    import time
-    from concurrent.futures import FIRST_COMPLETED, wait
-
-    STUCK_AFTER = 300.0
-    started: dict[str, float] = {}
-
-    def _run_apply(m: dict) -> None:
-        started[str(m.get("path"))] = time.monotonic()
-        _report(
-            _apply_one(
-                str(m["path"]),
-                int(m.get("beatport_id") or 0),
-                cache,
-                art_overwrite,
-                m.get("snapshot") if isinstance(m.get("snapshot"), dict) else None,
-            )
+    def _apply_item(m: dict) -> EnrichResult:
+        return _apply_one(
+            str(m["path"]),
+            int(m.get("beatport_id") or 0),
+            cache,
+            art_overwrite,
+            m.get("snapshot") if isinstance(m.get("snapshot"), dict) else None,
         )
 
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        pending = {pool.submit(_run_apply, m): m for m in todo}
-        while pending:
-            done_set, _ = wait(set(pending), timeout=30.0, return_when=FIRST_COMPLETED)
-            for fut in list(done_set):
-                m = pending.pop(fut)
-                started.pop(str(m.get("path")), None)
-                try:
-                    fut.result()
-                except Exception as e:  # noqa: BLE001 - one bad file must not kill the batch
-                    logger.warning("Apply failed: %s", e)
-                    counts["error"] += 1
-            now = time.monotonic()
-            for fut, m in list(pending.items()):
-                # Only genuinely running files age out; queued ones have
-                # no start stamp yet and are never false-triggered.
-                birth = started.get(str(m.get("path")))
-                if birth is None:
-                    continue
-                if now - birth > STUCK_AFTER:
-                    logger.warning(
-                        "Stuck apply abandoned after %.0fs: %s",
-                        now - birth,
-                        m.get("path"),
-                    )
-                    pending.pop(fut)
-                    started.pop(str(m.get("path")), None)
-                    counts["stuck"] += 1
+    def _reap(m: dict, result: EnrichResult | None, abandoned: bool) -> None:
+        if abandoned:
+            counts["stuck"] += 1
+        elif result is not None:
+            _report(result)
+
+    run_pool(
+        todo,
+        _apply_item,
+        _reap,
+        workers=workers,
+        describe=lambda m: str(m.get("path")),
+    )
     return counts

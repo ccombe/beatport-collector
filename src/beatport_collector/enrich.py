@@ -27,6 +27,7 @@ from beatport_collector.paths import (  # noqa: F401 - re-exported for callers/t
     windows_to_wsl,
     wsl_to_windows,
 )
+from beatport_collector.pooling import run_pool
 
 logger = logging.getLogger(__name__)
 
@@ -335,67 +336,34 @@ def enrich_many(
     stream to *progress_cb* as they complete (bounded memory: callers
     should log, not accumulate). Returns results in completion order.
 
-    Watchdog: any future still pending STUCK_AFTER seconds is logged as a
-    stuck error and abandoned (its thread leaks, bounded by poison-file
-    count — usually DNS/driver hangs with no timeout of their own).
+    Pooling, reaping and the stuck-task watchdog live in
+    :mod:`beatport_collector.pooling`.
     """
-    import time
-    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-
-    STUCK_AFTER = 300.0
     total = len(paths)
-    done = 0
+    state = {"done": 0}
     out: list[EnrichResult] = []
-    started: dict[str, float] = {}
-    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
 
-        def _run(path: str) -> EnrichResult | None:
-            started[path] = time.monotonic()
-            return _enrich_one(
-                token,
-                path,
-                dry_run=dry_run,
-                overwrite=overwrite,
-                art_overwrite=art_overwrite,
-                delay=delay,
-            )
+    def _work(path: str) -> EnrichResult | None:
+        return _enrich_one(
+            token,
+            path,
+            dry_run=dry_run,
+            overwrite=overwrite,
+            art_overwrite=art_overwrite,
+            delay=delay,
+        )
 
-        pending = {pool.submit(_run, p): (p, time.monotonic()) for p in paths}
-        while pending:
-            done_set, _ = wait(set(pending), timeout=30.0, return_when=FIRST_COMPLETED)
-            now = time.monotonic()
-            for fut in list(done_set):
-                path, _ = pending.pop(fut)
-                started.pop(path, None)
-                done += 1
-                try:
-                    r = fut.result()
-                except Exception as e:  # noqa: BLE001 - one bad file must not kill the batch
-                    logger.warning("Worker failed for %s: %s", path, e)
-                    continue
-                if r is None:
-                    continue
-                out.append(r)
-                if progress_cb is not None:
-                    progress_cb(r, done, total)
-            for fut, (path, _born) in list(pending.items()):
-                # Age only from actual start: queued files refresh their
-                # timestamp each sweep and can never false-trigger.
-                birth = started.get(path)
-                if birth is None:
-                    pending[fut] = (path, now)
-                    continue
-                if now - birth > STUCK_AFTER:
-                    logger.warning(
-                        "Stuck file abandoned after %.0fs: %s", now - birth, path
-                    )
-                    stuck = EnrichResult(path, "", "", status="stuck")
-                    pending.pop(fut)
-                    started.pop(path, None)
-                    done += 1
-                    out.append(stuck)
-                    if progress_cb is not None:
-                        progress_cb(stuck, done, total)
+    def _emit(path: str, result: EnrichResult | None, abandoned: bool) -> None:
+        state["done"] += 1
+        if abandoned:
+            result = EnrichResult(path, "", "", status="stuck")
+        if result is None:
+            return
+        out.append(result)
+        if progress_cb is not None:
+            progress_cb(result, state["done"], total)
+
+    run_pool(paths, _work, _emit, workers=workers)
     return out
 
 

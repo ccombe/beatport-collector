@@ -50,3 +50,9 @@ gdrive_live.log
 
 # Throwaway probes
 probe*.*
+
+# transient manifests / run logs from live batch work
+gdrive_*.log
+gdrive_*.err
+gdrive_*.jsonl
+sparse_gdrive_todo*.json
