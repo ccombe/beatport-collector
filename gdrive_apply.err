@@ -1,0 +1,39 @@
+Logged in as 4nT1
+Detail fetch failed for 11764259: 403 Client Error: Forbidden for url: https://api.beatport.com/v4/catalog/tracks/11764259/
+Detail fetch failed for 19076955: 403 Client Error: Forbidden for url: https://api.beatport.com/v4/catalog/tracks/19076955/
+Detail fetch failed for 1980650: 403 Client Error: Forbidden for url: https://api.beatport.com/v4/catalog/tracks/1980650/
+Detail fetch failed for 20845489: 403 Client Error: Forbidden for url: https://api.beatport.com/v4/catalog/tracks/20845489/
+Detail fetch failed for 20866070: 403 Client Error: Forbidden for url: https://api.beatport.com/v4/catalog/tracks/20866070/
+Detail fetch failed for 20867267: 403 Client Error: Forbidden for url: https://api.beatport.com/v4/catalog/tracks/20867267/
+Detail fetch failed for 21567974: 403 Client Error: Forbidden for url: https://api.beatport.com/v4/catalog/tracks/21567974/
+Detail fetch failed for 21683846: 403 Client Error: Forbidden for url: https://api.beatport.com/v4/catalog/tracks/21683846/
+Detail fetch failed for 22043601: 403 Client Error: Forbidden for url: https://api.beatport.com/v4/catalog/tracks/22043601/
+Detail fetch failed for 24001698: 403 Client Error: Forbidden for url: https://api.beatport.com/v4/catalog/tracks/24001698/
+Detail fetch failed for 24036812: 403 Client Error: Forbidden for url: https://api.beatport.com/v4/catalog/tracks/24036812/
+Detail fetch failed for 25111525: 403 Client Error: Forbidden for url: https://api.beatport.com/v4/catalog/tracks/25111525/
+Detail fetch failed for 25566236: 403 Client Error: Forbidden for url: https://api.beatport.com/v4/catalog/tracks/25566236/
+Detail fetch failed for 27498750: 403 Client Error: Forbidden for url: https://api.beatport.com/v4/catalog/tracks/27498750/
+Detail fetch failed for 3634954: 403 Client Error: Forbidden for url: https://api.beatport.com/v4/catalog/tracks/3634954/
+Detail fetch failed for 4703705: 403 Client Error: Forbidden for url: https://api.beatport.com/v4/catalog/tracks/4703705/
+Detail fetch failed for 6064488: 403 Client Error: Forbidden for url: https://api.beatport.com/v4/catalog/tracks/6064488/
+Detail fetch failed for 6159181: 403 Client Error: Forbidden for url: https://api.beatport.com/v4/catalog/tracks/6159181/
+Detail fetch failed for 801506: 403 Client Error: Forbidden for url: https://api.beatport.com/v4/catalog/tracks/801506/
+Artwork embed failed for G:\My Drive\Music\Various Artists\2026 - Beatport Top 100 Downloads July 2026\.enrich-so4xihzq.mp3: [Errno 13] Permission denied: 'G:\\My Drive\\Music\\Various Artists\\2026 - Beatport Top 100 Downloads July 2026\\.enrich-so4xihzq.mp3'
+Artwork embed failed for G:\My Drive\Music\Various Artists\2026 - Beatport Top 100 Downloads July 2026\.enrich-0dzkglnh.mp3: [Errno 13] Permission denied: 'G:\\My Drive\\Music\\Various Artists\\2026 - Beatport Top 100 Downloads July 2026\\.enrich-0dzkglnh.mp3'
+Artwork embed failed for G:\My Drive\Music\Various Artists\2026 - Beatport Top 100 Downloads July 2026\.enrich-f7i5l97w.mp3: [Errno 13] Permission denied: 'G:\\My Drive\\Music\\Various Artists\\2026 - Beatport Top 100 Downloads July 2026\\.enrich-f7i5l97w.mp3'
+Artwork embed failed for G:\My Drive\Music\Various Artists\2026 - Beatport Top 100 Downloads July 2026\.enrich-x4al5z0j.mp3: [Errno 13] Permission denied: 'G:\\My Drive\\Music\\Various Artists\\2026 - Beatport Top 100 Downloads July 2026\\.enrich-x4al5z0j.mp3'
+Artwork embed failed for G:\My Drive\Music\Mark Reeve\2011 -\.enrich-w1yr6fp_.mp3: [Errno 13] Permission denied: 'G:\\My Drive\\Music\\Mark Reeve\\2011 -\\.enrich-w1yr6fp_.mp3'
+Artwork embed failed for G:\My Drive\Music\Paul Ritch\_\.enrich-eygm4_qz.mp3: [Errno 13] Permission denied: 'G:\\My Drive\\Music\\Paul Ritch\\_\\.enrich-eygm4_qz.mp3'
+Artwork embed failed for G:\My Drive\Music\Fabio Giannelli\_\.enrich-nufo0iwc.mp3: [Errno 13] Permission denied: 'G:\\My Drive\\Music\\Fabio Giannelli\\_\\.enrich-nufo0iwc.mp3'
+Artwork embed failed for G:\My Drive\Music\Tom Demac\_\.enrich-e6ir3r5n.mp3: [Errno 13] Permission denied: 'G:\\My Drive\\Music\\Tom Demac\\_\\.enrich-e6ir3r5n.mp3'
+Artwork embed failed for G:\My Drive\Music\Unsorted\.enrich-ydyrmqxl.aiff: [Errno 13] Permission denied: 'G:\\My Drive\\Music\\Unsorted\\.enrich-ydyrmqxl.aiff'
+Artwork embed failed for G:\My Drive\Music\Unsorted\.enrich-fnbz0s7w.mp3: [Errno 13] Permission denied: 'G:\\My Drive\\Music\\Unsorted\\.enrich-fnbz0s7w.mp3'
+Artwork embed failed for G:\My Drive\Music\Silverlining\[unnamed]\.enrich-gqff5dw8.flac: [Errno 13] Permission denied: 'G:\\My Drive\\Music\\Silverlining\\[unnamed]\\.enrich-gqff5dw8.flac'
+Artwork embed failed for G:\My Drive\Music\Felipe Allenn\2024 -\.enrich-9oqy7m5u.mp3: [Errno 13] Permission denied: 'G:\\My Drive\\Music\\Felipe Allenn\\2024 -\\.enrich-9oqy7m5u.mp3'
+Artwork embed failed for G:\My Drive\Music\Jose Alves\2024 -\.enrich-wn36jo0y.mp3: [Errno 13] Permission denied: 'G:\\My Drive\\Music\\Jose Alves\\2024 -\\.enrich-wn36jo0y.mp3'
+Artwork embed failed for G:\My Drive\Music\Junglewood\2024 -\.enrich-uyejjx1_.mp3: [Errno 13] Permission denied: 'G:\\My Drive\\Music\\Junglewood\\2024 -\\.enrich-uyejjx1_.mp3'
+Artwork embed failed for G:\My Drive\Music\Manolaco, GruuvElement's\2024 -\.enrich-_bbgt1tu.mp3: [Errno 13] Permission denied: "G:\\My Drive\\Music\\Manolaco, GruuvElement's\\2024 -\\.enrich-_bbgt1tu.mp3"
+Artwork embed failed for G:\My Drive\Music\Papa Dummy, Brown Stereo, DJ Steavy Boy\2024 -\.enrich-u2y0qucb.mp3: [Errno 13] Permission denied: 'G:\\My Drive\\Music\\Papa Dummy, Brown Stereo, DJ Steavy Boy\\2024 -\\.enrich-u2y0qucb.mp3'
+Artwork embed failed for G:\My Drive\Music\Rameff, Max Mignot\2024 -\.enrich-dd22wfe0.mp3: [Errno 13] Permission denied: 'G:\\My Drive\\Music\\Rameff, Max Mignot\\2024 -\\.enrich-dd22wfe0.mp3'
+Artwork embed failed for G:\My Drive\Music\Rolf Saxer\2024 -\.enrich-pskaudpl.mp3: [Errno 13] Permission denied: 'G:\\My Drive\\Music\\Rolf Saxer\\2024 -\\.enrich-pskaudpl.mp3'
+Artwork embed failed for G:\My Drive\Music\Yvan Polge\2024 -\.enrich-djwdv9cb.mp3: [Errno 13] Permission denied: 'G:\\My Drive\\Music\\Yvan Polge\\2024 -\\.enrich-djwdv9cb.mp3'

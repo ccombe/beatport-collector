@@ -32,6 +32,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 from dataclasses import dataclass, field
 
 from mutagen.mp3 import MP3
@@ -332,16 +333,28 @@ def apply_plan(plan: TagPlan, dry_run: bool = True, v2_version: int = 3) -> dict
         }
 
     # 4. Verified — atomically replace the original (same filesystem).
-    try:
-        os.replace(tmp_path, plan.path)
-    except Exception as e:  # noqa: BLE001 - replace failure must report, temp kept for inspection
+    #    Cloud/virtual drives (Google Drive) hold transient handles, so a
+    #    single WinError 32 is not fatal: retry briefly before giving up.
+    replace_err: Exception | None = None
+    for attempt in range(6):
+        try:
+            os.replace(tmp_path, plan.path)
+            replace_err = None
+            break
+        except OSError as e:
+            replace_err = e
+            logger.warning(
+                "Replace attempt %d/6 failed for %s: %s", attempt + 1, plan.path, e
+            )
+            time.sleep(0.4 * (attempt + 1))
+    if replace_err is not None:
         return {
             "path": plan.path,
             "dry_run": False,
             "updated": sorted(plan.updates.keys()),
             "artwork_embedded": art_ok,
             "verified": True,
-            "error": f"verified but replace failed, temp kept at {tmp_path}: {e}",
+            "error": f"verified but replace failed, temp kept at {tmp_path}: {replace_err}",
         }
     return {
         "path": plan.path,
