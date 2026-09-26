@@ -302,6 +302,21 @@ def main() -> None:
         "--output", default=None, help="Output DB path (default: auto)"
     )
 
+    # --- scan-tags: sparse-tag manifest for batch/apply ---
+    stag_parser = sub.add_parser(
+        "scan-tags",
+        help="Walk a music dir and write sparse-tag manifest JSON (missing/junk tags)",
+    )
+    stag_parser.add_argument("music_dir", help="Directory containing music files")
+    stag_parser.add_argument(
+        "--output", required=True, help="Output manifest JSON path"
+    )
+    stag_parser.add_argument(
+        "--ext",
+        default=None,
+        help="Comma-separated extensions (default: mp3,flac,wav,aiff,aif,m4a)",
+    )
+
     # --- scan ---
     scan_parser = sub.add_parser(
         "scan", help="Scan music dir and match files to purchase CSV"
@@ -506,6 +521,64 @@ def main() -> None:
             extensions=_extensions_from_arg(args.ext),
             output_path=args.output,
         )
+
+    elif args.command == "scan-tags":
+        import json
+
+        from beatport_collector import tagger
+        from beatport_collector.tagger import AUDIO_EXTENSIONS
+
+        if not os.path.isdir(args.music_dir):
+            print(f"Directory not found: {args.music_dir}")
+            sys.exit(1)
+        exts = (
+            {f".{e.strip('.').lower()}" for e in args.ext.split(",")}
+            if args.ext
+            else set(AUDIO_EXTENSIONS)
+        )
+        sparse: list[dict[str, object]] = []
+        total = 0
+        for dirpath, _dirs, files in os.walk(args.music_dir):
+            for fn in files:
+                if os.path.splitext(fn)[1].lower() not in exts:
+                    continue
+                total += 1
+                p = os.path.join(dirpath, fn)
+                cur = tagger.current_tags(p)
+                if not cur:
+                    sparse.append({"path": p, "missing": ["unreadable"]})
+                    continue
+                needs, missing = tagger.is_missing_key_tags(p)
+                if not needs:
+                    continue
+                try:
+                    from mutagen import File as MutagenFile
+
+                    audio = MutagenFile(p)
+                    dur_ms = (
+                        int(float(audio.info.length) * 1000)
+                        if audio is not None and hasattr(audio.info, "length")
+                        else 0
+                    )
+                except Exception:  # noqa: BLE001 - duration optional for manifest
+                    dur_ms = 0
+                sparse.append(
+                    {
+                        "path": p,
+                        "artist": cur.get("artist", ""),
+                        "title": cur.get("title", ""),
+                        "album": cur.get("album", ""),
+                        "genre": cur.get("genre", ""),
+                        "date": cur.get("date", ""),
+                        "duration_ms": dur_ms,
+                        "missing": missing,
+                    }
+                )
+                if len(sparse) % 500 == 0:
+                    print(f"  ...{len(sparse)} sparse of {total} scanned")
+        with open(args.output, "w", encoding="utf-8") as f:
+            json.dump(sparse, f)
+        print(f"  {len(sparse)} sparse of {total} files -> {args.output}")
 
     elif args.command == "scan":
         run_scan_and_playlist(
