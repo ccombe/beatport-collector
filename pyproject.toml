@@ -27,8 +27,16 @@ dev = [
 [tool.mutmut]
 source_paths = ["src/"]
 pytest_add_cli_args_test_selection = ["tests/"]
-# Log text is never asserted: mutating it only produces noise survivors.
-do_not_mutate_patterns = ['logger\\.\\w+']
+# Prose is never asserted: mutating it only produces noise survivors. Log
+# text, argparse help strings, and metavar/description text are docs, not
+# behaviour. Behavioural messages that ARE asserted (the progress line,
+# error text) are deliberately not listed here.
+do_not_mutate_patterns = [
+    'logger\\.\\w+',
+    'help=',
+    'description=',
+    'metavar=',
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

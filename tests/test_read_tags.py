@@ -85,6 +85,76 @@ def test_map_id3_leaves_unknown_keys_alone() -> None:
     assert tags == {"zzz": "q"}
 
 
+def test_catalog_row_schema_is_exactly_the_declared_fields(monkeypatch) -> None:
+    """Pin the catalog CSV schema.
+
+    Mutating any dict key here silently renames a CSV column, which is a
+    real behaviour change no other assertion would catch.
+    """
+    import os
+
+    from beatport_collector.scanner import CATALOG_FIELDS, file_to_catalog_row
+
+    audio = SimpleNamespace(
+        tags={
+            "TPE1": ["Art"],
+            "TIT2": "Tit",
+            "TALB": ["LP"],
+            "TSRC": ["US1"],
+            "TDRC": ["2024-01-01"],
+            "TCON": ["House"],
+            "TRCK": ["3/12"],
+        },
+        info=SimpleNamespace(length=125.0),
+    )
+    monkeypatch.setattr(scanner_mod, "MutagenFile", lambda path: audio)
+    monkeypatch.setattr(os.path, "getsize", lambda path: 4096)
+    row = file_to_catalog_row("/m/a.mp3")
+    assert tuple(row) == CATALOG_FIELDS
+    assert row["Artist"] == "Art"
+    assert row["Track Number"] == "3/12"
+    assert row["Duration"] == "2:05"
+    assert row["File Size"] == "4096"
+
+
+def test_sparse_entry_schema_is_stable(monkeypatch) -> None:
+    """Pin the sparse-manifest entry keys (the batch/apply input contract)."""
+    import beatport_collector.tagger as tagger_mod
+    from beatport_collector.scanner import _sparse_entry
+
+    monkeypatch.setattr(
+        tagger_mod,
+        "current_tags",
+        lambda p: {
+            "artist": "A",
+            "title": "T",
+            "album": "LP",
+            "genre": "G",
+            "date": "2024-01-01",
+        },
+    )
+    monkeypatch.setattr(tagger_mod, "is_missing_key_tags", lambda p: (True, ["genre"]))
+    monkeypatch.setattr(
+        scanner_mod,
+        "MutagenFile",
+        lambda p: SimpleNamespace(info=SimpleNamespace(length=2.0)),
+    )
+    entry = _sparse_entry("/m/a.mp3")
+    assert entry is not None
+    assert tuple(entry) == (
+        "path",
+        "artist",
+        "title",
+        "album",
+        "genre",
+        "date",
+        "duration_ms",
+        "missing",
+    )
+    assert entry["duration_ms"] == 2000
+    assert entry["missing"] == ["genre"]
+
+
 def test_worker_exception_propagates(monkeypatch) -> None:
     def fake_get(url, headers=None, timeout=None):
         raise requests.ConnectionError("down")
