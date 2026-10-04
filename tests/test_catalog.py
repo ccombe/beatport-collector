@@ -183,3 +183,70 @@ class TestCatalogBuild:
 
             with pytest.raises(RuntimeError, match="No music files"):
                 cat.build(tmp, extensions={".mp3"})
+
+    def test_build_defaults_to_known_extensions(self) -> None:
+        import os
+
+        with tempfile.TemporaryDirectory() as tmp, Catalog(":memory:") as cat:
+            open(os.path.join(tmp, "x.mp3"), "wb").close()
+            open(os.path.join(tmp, "notes.txt"), "wb").close()
+            assert cat.build(tmp) == 1  # only the mp3, via DEFAULT_EXTENSIONS
+
+    def test_build_reports_progress_each_thousand(self, capsys, monkeypatch) -> None:
+        import beatport_collector.catalog as catalog_mod
+
+        row = {
+            "File Path": "",
+            "Artist": "A",
+            "Album Artist": "",
+            "Title": "T",
+            "Album": "",
+            "ISRC": "",
+            "Track Number": "",
+            "Genre": "",
+            "Date": "",
+            "Duration": "1:00",
+            "File Size": "10",
+        }
+
+        def fake_row(fp: str) -> dict[str, str]:
+            return dict(row, **{"File Path": fp})
+
+        monkeypatch.setattr(
+            catalog_mod,
+            "find_music_files",
+            lambda d, ext: [f"/m{i}.mp3" for i in range(1001)],
+        )
+        monkeypatch.setattr(catalog_mod, "file_to_catalog_row", fake_row)
+        with Catalog(":memory:") as cat:
+            assert cat.build("/music") == 1001
+        assert "1000/1001" in capsys.readouterr().out
+
+    def test_default_path_is_cwd_file(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        with Catalog() as cat:
+            assert cat._path == "music_catalog.db"
+        import os
+
+        assert os.path.exists(tmp_path / "music_catalog.db")
+
+    def test_comma_artist_skips_empty_first_artist(self) -> None:
+        with Catalog(":memory:") as cat:
+            rows = [{"ISRC": "", "Artists": ",", "Title": "Nope", "Release Title": ""}]
+            augmented, matched, unmatched = cat.match(rows)
+            assert (matched, unmatched) == (0, 1)
+            assert augmented[0]["Local File Path"] == ""
+
+    def test_spaced_title_without_album_misses_condensed(self) -> None:
+        with Catalog(":memory:") as cat:
+            rows = [
+                {
+                    "ISRC": "",
+                    "Artists": "A",
+                    "Title": "Hello World",
+                    "Release Title": "",
+                }
+            ]
+            augmented, matched, unmatched = cat.match(rows)
+            assert (matched, unmatched) == (0, 1)
+            assert augmented[0]["Local File Path"] == ""

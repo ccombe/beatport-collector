@@ -10,6 +10,8 @@ from datetime import datetime
 from xml.dom import minidom
 from xml.etree.ElementTree import Element, SubElement, tostring
 
+from beatport_collector.scanner import LOCAL_FILE_PATH_FIELD
+
 logger = logging.getLogger(__name__)
 
 
@@ -48,7 +50,7 @@ def create_playlists(
 
     with open(matched_csv, encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
-        rows = [r for r in reader if r.get("Local File Path")]
+        rows = [r for r in reader if r.get(LOCAL_FILE_PATH_FIELD)]
 
     if not rows:
         raise RuntimeError("No matched tracks with local file paths found in CSV")
@@ -94,7 +96,7 @@ def _write_m3u(path: str, tracks: list[dict[str, str]]) -> None:
     with open(path, "w", encoding="utf-8") as f:
         f.write("#EXTM3U\n")
         for t in tracks:
-            fp = t.get("Local File Path", "")
+            fp = t.get(LOCAL_FILE_PATH_FIELD, "")
             title = t.get("Title", "")
             artists = t.get("Artists", "")
             if fp:
@@ -105,7 +107,7 @@ def _unique_tracks(tracks: list[dict[str, str]]) -> list[dict[str, str]]:
     seen: set[str] = set()
     result: list[dict[str, str]] = []
     for t in tracks:
-        fp = t.get("Local File Path", "")
+        fp = t.get(LOCAL_FILE_PATH_FIELD, "")
         if fp and fp not in seen:
             seen.add(fp)
             result.append(t)
@@ -119,7 +121,7 @@ def _append_collection(root: Element, all_rows: list[dict[str, str]]) -> dict[st
 
     track_id_map: dict[str, int] = {}
     for i, row in enumerate(all_rows, 1):
-        fp = row.get("Local File Path", "")
+        fp = row.get(LOCAL_FILE_PATH_FIELD, "")
         track_id_map[fp] = i
 
         tr = SubElement(collection, "TRACK")
@@ -137,7 +139,7 @@ def _append_track_refs(
     parent: Element, tracks: list[dict[str, str]], track_id_map: dict[str, int]
 ) -> None:
     for row in tracks:
-        tid = track_id_map.get(row.get("Local File Path", ""))
+        tid = track_id_map.get(row.get(LOCAL_FILE_PATH_FIELD, ""))
         if tid:
             tr = SubElement(parent, "TRACK")
             tr.set("Key", str(tid))
