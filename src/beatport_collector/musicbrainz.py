@@ -87,6 +87,8 @@ def _duration_fits(
 
 
 def _artist_fits(artist: str, credit: str) -> bool:
+    if not artist or not credit:
+        return False
     if artist.lower() in credit or credit in artist.lower():
         return True
     first = artist.split(",")[0].strip().lower()

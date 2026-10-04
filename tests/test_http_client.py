@@ -132,3 +132,81 @@ def test_retry_after_is_honoured_up_to_the_cap(monkeypatch):
     assert client.get("https://x/a") == {"ok": True}
     assert len(calls) == 2
     assert calls[1] - calls[0] >= 0.25
+
+
+def test_fetch_artwork_branches(monkeypatch):
+    from beatport_collector.http_client import fetch_artwork
+
+    class _Img:
+        def __init__(self, ctype="image/jpeg", content=b"img"):
+            self.headers = {"Content-Type": ctype}
+            self.content = content
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(
+        http_client.requests, "get", lambda *a, **k: _Img("image/png", b"png")
+    )
+    assert fetch_artwork("http://x/a.png") == (b"png", "image/png")
+    monkeypatch.setattr(
+        http_client.requests, "get", lambda *a, **k: _Img("text/html", b"<p>")
+    )
+    assert fetch_artwork("http://x/a.html") is None
+
+    def boom(*a, **k):
+        raise requests.ConnectionError("down")
+
+    monkeypatch.setattr(http_client.requests, "get", boom)
+    assert fetch_artwork("http://x/a.jpg") is None
+
+
+def test_jittered_sleep_spreads_load(monkeypatch):
+    from beatport_collector.http_client import jittered_sleep
+
+    seen: list = []
+    monkeypatch.setattr(http_client.time, "sleep", lambda s: seen.append(s))
+    monkeypatch.setattr(http_client.random, "uniform", lambda lo, hi: (lo, hi))
+    jittered_sleep(10.0, jitter=0.5)
+    assert seen == [(5.0, 15.0)]
+
+
+def test_retry_after_garbage_falls_back_to_backoff():
+    client = BeatportClient(token="t", min_gap=0.0, max_retries=0)
+    r = _Resp(status_code=429)
+    r.headers["Retry-After"] = "not-a-number"
+    assert client._retry_after_seconds(r, 2.0) == 2.0  # type: ignore
+
+
+def test_request_failure_retries_then_succeeds(monkeypatch):
+    calls: list = []
+    sleeps: list = []
+
+    def fake_get(url, headers=None, timeout=None):
+        calls.append(url)
+        if len(calls) == 1:
+            raise requests.ConnectionError("blip")
+        return _Resp()
+
+    monkeypatch.setattr(http_client.requests, "get", fake_get)
+    monkeypatch.setattr(http_client.time, "sleep", lambda s: sleeps.append(s))
+    client = BeatportClient(token="t", min_gap=0.0, max_retries=1)
+    assert client.get("https://x/a") == {"ok": True}
+    assert len(calls) == 2
+    assert sleeps == [2.0]
+
+
+def test_exhausted_429_raises_status(monkeypatch):
+    r = _Resp(status_code=429)
+    monkeypatch.setattr(http_client.requests, "get", lambda *a, **k: r)
+    monkeypatch.setattr(http_client.time, "sleep", lambda s: None)
+    client = BeatportClient(token="t", min_gap=0.0, max_retries=0)
+    with pytest.raises(requests.HTTPError):
+        client.get("https://x/a")
+
+
+def test_degenerate_retry_budget_fails_fast(monkeypatch):
+    monkeypatch.setattr(http_client.requests, "get", lambda *a, **k: _Resp())
+    client = BeatportClient(token="t", min_gap=0.0, max_retries=-1)
+    with pytest.raises(RuntimeError, match="exhausted"):
+        client.get("https://x/a")

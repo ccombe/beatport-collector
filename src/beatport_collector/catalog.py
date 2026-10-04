@@ -9,6 +9,8 @@ from typing import Any, Self
 
 from beatport_collector.scanner import DEFAULT_EXTENSIONS as _DE
 from beatport_collector.scanner import (
+    FILE_PATH_FIELD,
+    LOCAL_FILE_PATH_FIELD,
     _artists_overlap,
     _norm_artist,
     _parse_artists,
@@ -124,7 +126,7 @@ class Catalog:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                row["File Path"],
+                row[FILE_PATH_FIELD],
                 row["Artist"],
                 row["Album Artist"],
                 row["Title"],
@@ -159,7 +161,7 @@ class Catalog:
         for row in purchase_rows:
             local_path = self._match_single(row) or ""
             out = dict(row)
-            out["Local File Path"] = local_path
+            out[LOCAL_FILE_PATH_FIELD] = local_path
             augmented.append(out)
             if local_path:
                 matched += 1

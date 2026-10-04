@@ -174,7 +174,7 @@ class ID3Backend:
                 vals = tags[fid].text
                 if vals:
                     return str(vals[0])
-        except (AttributeError, KeyError, IndexError):
+        except (AttributeError, KeyError, IndexError, TypeError):
             pass
         return ""
 
