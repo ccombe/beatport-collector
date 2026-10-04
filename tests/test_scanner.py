@@ -68,6 +68,30 @@ class TestParseArtists:
     def test_single(self) -> None:
         assert _parse_artists("DJ Test") == ["DJ Test"]
 
+    def test_every_separator(self) -> None:
+        for sep in (",", "&", "feat.", "feat", "ft.", "vs.", "vs", " x ", " / "):
+            assert _parse_artists(f"A{sep}B") == ["A", "B"], sep
+
+    def test_blank_segments_dropped(self) -> None:
+        assert _parse_artists("A,,B") == ["A", "B"]
+        assert _parse_artists(",,,") == []
+        assert _parse_artists("   ") == []
+
+
+class TestLevenshtein:
+    def test_known_distances(self) -> None:
+        from beatport_collector.scanner import levenshtein
+
+        assert levenshtein("", "") == 0
+        assert levenshtein("abc", "abc") == 0
+        assert levenshtein("abc", "") == 3
+        assert levenshtein("", "abc") == 3
+        assert levenshtein("kitten", "sitting") == 3
+        assert levenshtein("abc", "abd") == 1
+        # Symmetric: the implementation swaps to keep the inner loop short.
+        assert levenshtein("sitting", "kitten") == 3
+        assert levenshtein("Sensasion", "Sensation") == 1
+
 
 class TestMatchTracksToFiles:
     def test_no_catalog_no_match(self) -> None:
