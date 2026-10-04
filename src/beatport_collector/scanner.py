@@ -1,219 +1,50 @@
-"""Scan a music directory and match local files against the Beatport purchase CSV."""
+"""In-memory matching plus the CLI-facing scan drivers.
+
+Layering (the import graph is acyclic by design):
+
+    matching.py   pure text/query primitives, no I/O
+    catalog.py    SQLite store + the filesystem layer that feeds it
+    scanner.py    this module: the in-memory matcher and the drivers
+
+``scanner`` and ``catalog`` used to import each other. The shared matching
+primitives moved to :mod:`beatport_collector.matching`, and the filesystem
+layer (walking a directory, reading tags, building catalog rows) moved
+down into :mod:`beatport_collector.catalog`, whose job it is. Both matchers
+therefore depend on the same primitives without either importing the other.
+"""
 
 from __future__ import annotations
 
 import csv
 import logging
 import os
-import re
-import unicodedata
 from collections.abc import Callable
-from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
 
 from mutagen import File as MutagenFile
 
-logger = logging.getLogger(__name__)
-
-DEFAULT_EXTENSIONS = {".mp3", ".wav", ".flac", ".aiff", ".aac", ".ogg", ".wma", ".m4a"}
-
-FILE_PATH_FIELD = "File Path"
-LOCAL_FILE_PATH_FIELD = "Local File Path"
-
-ID3_COMMON: dict[str, str] = {
-    "artist": "TPE1",
-    "album_artist": "TPE2",
-    "title": "TIT2",
-    "album": "TALB",
-    "isrc": "TSRC",
-    "date": "TDRC",
-    "genre": "TCON",
-    "tracknumber": "TRCK",
-}
-
-CATALOG_FIELDS = (
+from beatport_collector.catalog import Catalog, file_to_catalog_row, find_music_files
+from beatport_collector.matching import (
+    DEFAULT_EXTENSIONS,
     FILE_PATH_FIELD,
-    "Artist",
-    "Album Artist",
-    "Title",
-    "Album",
-    "ISRC",
-    "Track Number",
-    "Genre",
-    "Date",
-    "Duration",
-    "File Size",
+    LOCAL_FILE_PATH_FIELD,
+    MATCHED_CSV_FIELDS,
+    _artists_overlap,
+    _norm_artist,
+    _parse_artists,
+    _Query,
+    clean_title,
+    levenshtein,
+    normalize,
 )
 
-MATCHED_CSV_FIELDS = (
-    "Track ID",
-    "Title",
-    "Artists",
-    "Remixers",
-    "Genre",
-    "Sub Genre",
-    "Label",
-    "Catalog Number",
-    "Release Date",
-    "Purchase Date",
-    "Price",
-    "BPM",
-    "Key",
-    "ISRC",
-    "Release ID",
-    "Release Title",
-    "Duration",
-    LOCAL_FILE_PATH_FIELD,
-)
+logger = logging.getLogger(__name__)
 
 
 # ── Normalisation ────────────────────────────────────────────
 
-MIX_KEYWORDS = "mix|edit|remix|version|rework|dub|vocal|instrumental|extended|radio|reprise|reprise|dub|dub mix"
-
-TITLE_SUFFIXES = re.compile(
-    rf"\s*[\(\[][^\)\]]*?(?:{MIX_KEYWORDS}|feat\.|featuring)[^\)]*[\)\]]\s*$",
-    re.IGNORECASE,
-)
-
-SIMPLE_TITLE_SUFFIX = re.compile(
-    r"\s+(original mix|extended mix|radio edit|club mix|dub mix|vocal mix|instrumental|remix|edit|rework)\s*$",
-    re.IGNORECASE,
-)
-
-DASH_SUFFIX = re.compile(
-    r"\s+[-–—]\s+(original mix|extended mix|radio edit|club mix|dub mix|vocal mix|instrumental|remix|edit|rework)\s*$",
-    re.IGNORECASE,
-)
-
-ALL_PAREN_CONTENT = re.compile(r"\s*[\(\[][^\)\]]*[\)\]]\s*$")
-
-FEAT_PATTERN = re.compile(
-    r"\s+(feat\.|featuring|ft\.)\s+.+$",
-    re.IGNORECASE,
-)
-
-
-def _strip_diacritics(text: str) -> str:
-    """Strip diacritics/accents, decompose ligatures."""
-    nfkd = unicodedata.normalize("NFKD", text)
-    return nfkd.encode("ascii", "ignore").decode("ascii")
-
-
-def normalize(text: str) -> str:
-    """Normalize text for fuzzy matching."""
-    text = _strip_diacritics(text)
-    text = text.lower().strip()
-    text = text.replace("\u2026", " ")
-    text = text.replace("\u2013", " ")
-    text = text.replace("-", " ")
-    text = text.replace("&", " and ")
-    text = re.sub(r"[^\w\s]", "", text)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
-
-
-def clean_title(text: str) -> str:
-    """Normalize a title for fuzzy matching by stripping common suffixes.
-
-    Removes (in order):
-      - Trailing parenthesised content containing mix/remix/feat keywords
-      - Plain keyword suffixes (e.g. `` original mix``)
-      - Dash-separated keyword suffixes (e.g. `` - Remix``)
-      - Any remaining trailing parenthesised content
-      - Leading ``feat.`` / ``ft.`` / ``featuring`` clauses
-      - Punctuation, casing, extra whitespace via :func:`normalize`
-    """
-    text = text.strip()
-    text = TITLE_SUFFIXES.sub("", text)
-    text = SIMPLE_TITLE_SUFFIX.sub("", text)
-    text = DASH_SUFFIX.sub("", text)
-    text = ALL_PAREN_CONTENT.sub("", text)
-    text = FEAT_PATTERN.sub("", text)
-    return normalize(text)
-
-
 # ── File scanning ────────────────────────────────────────────
-
-
-def find_music_files(directory: str, extensions: set[str]) -> list[str]:
-    """Recursively find all music files with given extensions."""
-    files: list[str] = []
-    for root, _, filenames in os.walk(directory):
-        for f in filenames:
-            ext = os.path.splitext(f)[1].lower()
-            if ext in extensions:
-                files.append(os.path.join(root, f))
-    logger.info("Found %d music files in %s", len(files), directory)
-    return files
-
-
-def _read_tag_values(audio: Any) -> dict[str, Any]:
-    """Raw tag map from a mutagen object: lowercase keys, first values."""
-    tags: dict[str, Any] = {}
-    if not (hasattr(audio, "tags") and audio.tags):
-        return tags
-    for key in audio.tags:
-        vals = audio.tags.get(key)
-        if vals:
-            tags[key.lower()] = str(vals[0]) if isinstance(vals, list) else str(vals)
-    return tags
-
-
-def _map_id3_frames(tags: dict[str, Any]) -> None:
-    """Alias canonical names (artist/title/…) from raw ID3 frame ids in place."""
-    for name, frame_id in ID3_COMMON.items():
-        for variant in (frame_id, frame_id.lower()):
-            if tags.get(variant):
-                tags[name] = str(tags[variant])
-                break
-
-
-def read_file_tags(filepath: str) -> dict[str, Any]:
-    """Read audio metadata tags from a file using mutagen."""
-    try:
-        audio = MutagenFile(filepath)
-        if audio is None:
-            return {}
-        tags = _read_tag_values(audio)
-        _map_id3_frames(tags)
-        if hasattr(audio.info, "length"):
-            tags["duration"] = audio.info.length
-        return tags
-    except Exception as e:  # noqa: BLE001
-        logger.debug("Could not read tags from %s: %s", filepath, e)
-        return {}
-
-
-def _format_duration(seconds: float) -> str:
-    m = int(seconds // 60)
-    s = int(seconds % 60)
-    return f"{m}:{s:02d}"
-
-
-def file_to_catalog_row(filepath: str) -> dict[str, str]:
-    """Read a music file and return a catalog CSV row."""
-    tags = read_file_tags(filepath)
-    size = os.path.getsize(filepath)
-    dur = tags.get("duration", 0) or 0
-    return {
-        FILE_PATH_FIELD: filepath,
-        "Artist": tags.get("artist", ""),
-        "Album Artist": tags.get("album_artist", ""),
-        "Title": tags.get("title", ""),
-        "Album": tags.get("album", ""),
-        "ISRC": tags.get("isrc", ""),
-        "Track Number": tags.get("tracknumber", ""),
-        "Genre": tags.get("genre", ""),
-        "Date": tags.get("date", ""),
-        "Duration": _format_duration(float(dur)),
-        "File Size": str(size),
-    }
-
-
-# ── Catalog ──────────────────────────────────────────────────
 
 
 def create_catalog_db(
@@ -222,8 +53,6 @@ def create_catalog_db(
     output_path: str | None = None,
 ) -> str:
     """Scan *music_dir* and build a SQLite catalog DB of all files + tags."""
-    from beatport_collector.catalog import Catalog
-
     if extensions is None:
         extensions = DEFAULT_EXTENSIONS
 
@@ -305,86 +134,6 @@ def scan_sparse_manifest(
 
 
 # ── Matching ─────────────────────────────────────────────────
-
-
-def _norm_artist(text: str) -> str:
-    """Normalise artist string: lowercase, strip punctuation, collapse."""
-    t = _strip_diacritics(text)
-    t = t.lower().strip()
-    t = re.sub(r"[^\w\s&,]", "", t)
-    t = re.sub(r"\s+", " ", t)
-    return t.strip()
-
-
-def levenshtein(a: str, b: str) -> int:
-    """Levenshtein edit distance between two strings."""
-    la, lb = len(a), len(b)
-    if la < lb:
-        a, b = b, a
-        la, lb = lb, la
-    prev = range(lb + 1)
-    for i, ca in enumerate(a):
-        cur = [i + 1]
-        for j, cb in enumerate(b):
-            cur.append(min(cur[j] + 1, prev[j + 1] + 1, prev[j] + (ca != cb)))
-        prev = cur
-    return prev[lb]
-
-
-def _parse_artists(text: str) -> list[str]:
-    """Split a combined artist string into individual artist names."""
-    for sep in (",", "&", "feat.", "feat", "ft.", "vs.", "vs", " x ", " / "):
-        text = text.replace(sep, "||")
-    return [a.strip() for a in text.split("||") if a.strip()]
-
-
-def _artists_overlap(
-    purchase_artists: AbstractSet[str], entry_artists: AbstractSet[str]
-) -> bool:
-    """Check if any two artist names match (exact or partial substring).
-
-    Read-only, so any set-like collection works; ``frozenset`` is fine.
-    """
-    if purchase_artists & entry_artists:
-        return True
-    for pa in purchase_artists:
-        for ea in entry_artists:
-            if pa in ea or ea in pa:
-                return True
-    return False
-
-
-@dataclass(frozen=True)
-class _Query:
-    """A purchase row reduced to the keys the matching strategies compare on."""
-
-    isrc: str
-    artist: str
-    album: str
-    clean: str
-    condensed: str
-    artists: frozenset[str]
-    first_artist: str
-
-    @classmethod
-    def from_row(cls, row: dict[str, str]) -> _Query:
-        artist = _norm_artist(row.get("Artists", ""))
-        clean = clean_title(row.get("Title", ""))
-        parsed = _parse_artists(artist)
-        return cls(
-            isrc=row.get("ISRC", "").strip(),
-            artist=artist,
-            album=normalize(row.get("Release Title", "")),
-            clean=clean,
-            condensed=clean.replace(" ", ""),
-            artists=frozenset(parsed),
-            first_artist=parsed[0] if parsed else "",
-        )
-
-    @property
-    def has_fuzzy_keys(self) -> bool:
-        """Album + title + artist must all be present for strategies 9-13."""
-        return bool(self.album and self.clean and self.artist)
 
 
 @dataclass(frozen=True)
@@ -693,8 +442,6 @@ def scan(
         raise RuntimeError(f"Empty purchase CSV: {csv_path}")
 
     if catalog_path and os.path.exists(catalog_path):
-        from beatport_collector.catalog import Catalog
-
         with Catalog(catalog_path) as cat:
             augmented, matched, unmatched = cat.match(purchase_rows)
         logger.info(

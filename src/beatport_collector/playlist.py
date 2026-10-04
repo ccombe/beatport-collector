@@ -10,7 +10,7 @@ from datetime import datetime
 from xml.dom import minidom
 from xml.etree.ElementTree import Element, SubElement, tostring
 
-from beatport_collector.scanner import LOCAL_FILE_PATH_FIELD
+from beatport_collector.matching import LOCAL_FILE_PATH_FIELD
 
 logger = logging.getLogger(__name__)
 

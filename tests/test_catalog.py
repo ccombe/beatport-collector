@@ -5,7 +5,7 @@ from __future__ import annotations
 import tempfile
 
 from beatport_collector.catalog import Catalog
-from beatport_collector.scanner import MATCHED_CSV_FIELDS
+from beatport_collector.matching import MATCHED_CSV_FIELDS
 
 
 class TestCatalogInMemory:

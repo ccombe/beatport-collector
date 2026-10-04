@@ -78,7 +78,7 @@ def test_scan_uses_catalog_db_when_present(monkeypatch, tmp_path) -> None:
     csv_path = _purchase_csv(
         tmp_path / "lib.csv", [{"Track ID": "1", "Title": "T", "Artists": "A"}]
     )
-    import beatport_collector.catalog as catalog_mod
+    import beatport_collector.scanner as scanner_mod
 
     seen: dict = {}
 
@@ -95,7 +95,7 @@ def test_scan_uses_catalog_db_when_present(monkeypatch, tmp_path) -> None:
         def match(self, rows):
             return ([{"Local File Path": "x"}], 1, 0)
 
-    monkeypatch.setattr(catalog_mod, "Catalog", FakeCat)
+    monkeypatch.setattr(scanner_mod, "Catalog", FakeCat)
     out = scan(
         str(tmp_path),
         csv_path,
@@ -108,7 +108,7 @@ def test_scan_uses_catalog_db_when_present(monkeypatch, tmp_path) -> None:
 
 
 def test_create_catalog_db_defaults_and_delegates(monkeypatch, tmp_path) -> None:
-    import beatport_collector.catalog as catalog_mod
+    import beatport_collector.scanner as scanner_mod
 
     seen: dict = {}
 
@@ -129,7 +129,7 @@ def test_create_catalog_db_defaults_and_delegates(monkeypatch, tmp_path) -> None
         def stats(self):
             return {"tracks": 3}
 
-    monkeypatch.setattr(catalog_mod, "Catalog", FakeCat)
+    monkeypatch.setattr(scanner_mod, "Catalog", FakeCat)
     out = create_catalog_db(str(tmp_path), output_path=str(tmp_path / "c.db"))
     assert out.endswith("c.db")
     assert seen["dir"] == str(tmp_path)
