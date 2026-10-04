@@ -15,7 +15,12 @@ class Artist:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Artist:
-        return cls(id=int(data.get("id", 0)), name=data.get("name", ""), slug=data.get("slug", ""), role=data.get("role", data.get("type", "")))
+        return cls(
+            id=int(data.get("id", 0)),
+            name=data.get("name", "") or "",
+            slug=data.get("slug", "") or "",
+            role=data.get("role", data.get("type", "")) or "",
+        )
 
 
 @dataclass
@@ -26,7 +31,11 @@ class Genre:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Genre:
-        return cls(id=int(data.get("id", 0)), name=data.get("name", ""), slug=data.get("slug", ""))
+        return cls(
+            id=int(data.get("id", 0)),
+            name=data.get("name", "") or "",
+            slug=data.get("slug", "") or "",
+        )
 
 
 @dataclass
@@ -38,7 +47,12 @@ class Key:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Key:
-        return cls(id=int(data.get("id", 0)), name=data.get("name", ""), camelot_number=data.get("camelot_number", 0), camelot_letter=data.get("camelot_letter", ""))
+        return cls(
+            id=int(data.get("id", 0)),
+            name=data.get("name", "") or "",
+            camelot_number=data.get("camelot_number", 0) or 0,
+            camelot_letter=data.get("camelot_letter", "") or "",
+        )
 
 
 @dataclass
@@ -48,7 +62,7 @@ class Label:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Label:
-        return cls(id=int(data.get("id", 0)), name=data.get("name", ""))
+        return cls(id=int(data.get("id", 0)), name=data.get("name", "") or "")
 
 
 @dataclass
@@ -60,7 +74,9 @@ class Release:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Release:
         label = Label.from_dict(data["label"]) if data.get("label") else None
-        return cls(id=int(data.get("id", 0)), name=data.get("name", ""), label=label)
+        return cls(
+            id=int(data.get("id", 0)), name=data.get("name", "") or "", label=label
+        )
 
 
 @dataclass
@@ -73,7 +89,12 @@ class Price:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Price:
         if isinstance(data, dict):
-            return cls(code=data.get("code", ""), symbol=data.get("symbol", ""), value=float(data.get("value", 0)), display=data.get("display", ""))
+            return cls(
+                code=data.get("code", "") or "",
+                symbol=data.get("symbol", "") or "",
+                value=float(data.get("value", 0) or 0),
+                display=data.get("display", "") or "",
+            )
         return cls()
 
 
@@ -102,36 +123,39 @@ class Track:
     mix_name: str = ""
 
     @classmethod
+    def _nested(cls, data: dict[str, Any], key: str, factory) -> Any | None:
+        return factory(data[key]) if data.get(key) else None
+
+    @classmethod
     def from_downloads_api(cls, data: dict[str, Any]) -> Track:
         artists = [Artist.from_dict(a) for a in data.get("artists", [])]
         remixers = [Artist.from_dict(r) for r in data.get("remixers", [])]
-        genre = Genre.from_dict(data["genre"]) if data.get("genre") else None
-        sub_genre = Genre.from_dict(data["sub_genre"]) if data.get("sub_genre") else None
-        label = Label.from_dict(data["label"]) if data.get("label") else None
-        release = Release.from_dict(data["release"]) if data.get("release") else None
-        key = Key.from_dict(data["key"]) if data.get("key") else None
-        price = Price.from_dict(data["price"]) if isinstance(data.get("price"), dict) else Price()
+        price = (
+            Price.from_dict(data["price"])
+            if isinstance(data.get("price"), dict)
+            else Price()
+        )
 
         return cls(
             id=int(data.get("id", 0)),
-            name=data.get("name", ""),
+            name=data.get("name", "") or "",
             artists=artists,
             remixers=remixers,
-            genre=genre,
-            sub_genre=sub_genre,
-            label=label,
-            release=release,
-            key=key,
+            genre=cls._nested(data, "genre", Genre.from_dict),
+            sub_genre=cls._nested(data, "sub_genre", Genre.from_dict),
+            label=cls._nested(data, "label", Label.from_dict),
+            release=cls._nested(data, "release", Release.from_dict),
+            key=cls._nested(data, "key", Key.from_dict),
             price=price,
             bpm=data.get("bpm", 0) or 0,
-            isrc=data.get("isrc", ""),
-            catalog_number=data.get("catalog_number", ""),
-            slug=data.get("slug", ""),
-            publish_date=data.get("publish_date", ""),
-            purchase_date=data.get("purchase_date", ""),
+            isrc=data.get("isrc", "") or "",
+            catalog_number=data.get("catalog_number", "") or "",
+            slug=data.get("slug", "") or "",
+            publish_date=data.get("publish_date", "") or "",
+            purchase_date=data.get("purchase_date", "") or "",
             length_ms=data.get("length_ms", 0) or 0,
-            length=data.get("length", ""),
-            mix_name=data.get("mix_name", ""),
+            length=data.get("length", "") or "",
+            mix_name=data.get("mix_name", "") or "",
         )
 
 
@@ -144,7 +168,12 @@ class Cart:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Cart:
-        return cls(id=int(data.get("id", 0)), name=data.get("name", ""), is_default=bool(data.get("default", False)), person_id=int(data.get("person_id", 0)))
+        return cls(
+            id=int(data.get("id", 0)),
+            name=data.get("name", ""),
+            is_default=bool(data.get("default", False)),
+            person_id=int(data.get("person_id", 0)),
+        )
 
 
 @dataclass

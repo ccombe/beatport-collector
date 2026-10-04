@@ -1,0 +1,46 @@
+name: mutation
+
+on:
+  schedule:
+    # Weekly, Monday 06:00 UTC. A full run takes ~1h on 4 vCPUs, so this
+    # stays off the per-push path by design.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  mutmut:
+    runs-on: ubuntu-latest # mutmut needs fork(); no Windows run
+    timeout-minutes: 180
+    # Advisory until the survivor backlog is triaged: results are uploaded
+    # as an artifact, the job never blocks a merge.
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install project
+        run: uv sync --all-groups --frozen
+
+      - name: Mutation run
+        run: uv run --group dev mutmut run --max-children 4
+
+      - name: Export stats
+        run: |
+          uv run --group dev mutmut export-cicd-stats
+          uv run --group dev mutmut badge --output mutation-score.json
+
+      - name: Upload results
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mutmut-results
+          path: |
+            mutants/
+            mutation-score.json

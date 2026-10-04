@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import requests
 
-from beatport_collector.config import API_BASE, API_BASE_DOCS, REDIRECT_URI, TIMEOUT, USER_AGENT
+from beatport_collector.config import (
+    API_BASE,
+    REDIRECT_URI,
+    TIMEOUT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +51,9 @@ class BeatportToken:
 def fetch_client_id() -> str:
     """Scrape API_CLIENT_ID from the Beatport docs page JavaScript bundles."""
     try:
-        html = requests.get(f"{API_BASE}/docs/", timeout=TIMEOUT).content.decode("utf-8")
+        html = requests.get(f"{API_BASE}/docs/", timeout=TIMEOUT).content.decode(
+            "utf-8"
+        )
     except requests.RequestException as e:
         raise RuntimeError(f"Failed to fetch Beatport docs page: {e}") from e
 
@@ -66,7 +71,9 @@ def fetch_client_id() -> str:
     raise RuntimeError("Could not find API_CLIENT_ID in Beatport docs scripts")
 
 
-def oauth_login(username: str, password: str, client_id: str | None = None) -> BeatportToken:
+def oauth_login(
+    username: str, password: str, client_id: str | None = None
+) -> BeatportToken:
     """Perform full OAuth authorization_code flow against Beatport API v4.
 
     Returns a BeatportToken with a fresh access token.
@@ -97,9 +104,13 @@ def oauth_login(username: str, password: str, client_id: str | None = None) -> B
 
     location = resp.headers.get("Location")
     if not location:
-        raise RuntimeError(f"No Location header in OAuth response (status {resp.status_code})")
+        raise RuntimeError(
+            f"No Location header in OAuth response (status {resp.status_code})"
+        )
 
-    next_url = urlparse(location if location.startswith("http") else f"{API_BASE}{location}")
+    next_url = urlparse(
+        location if location.startswith("http") else f"{API_BASE}{location}"
+    )
     codes = parse_qs(next_url.query).get("code")
     if not codes:
         raise RuntimeError(f"No authorization code in redirect: {location}")

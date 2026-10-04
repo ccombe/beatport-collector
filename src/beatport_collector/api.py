@@ -3,32 +3,24 @@
 from __future__ import annotations
 
 import logging
-import random
-import time
 from collections.abc import Callable
 from typing import Any
 
 import requests
 
-from beatport_collector.config import API_BASE, DEFAULT_PER_PAGE, DOWNLOADS_ENDPOINT, TIMEOUT, USER_AGENT
-from beatport_collector.session import BeatportToken
-from beatport_collector.types import Track, DownloadPage
+from beatport_collector.config import DEFAULT_PER_PAGE, DOWNLOADS_ENDPOINT
+from beatport_collector.http_client import BeatportClient, jittered_sleep
+from beatport_collector.types import DownloadPage, Track
+
+__all__ = [
+    "BeatportClient",
+    "fetch_all_downloads",
+    "fetch_downloads_page",
+    "jittered_sleep",
+    "parse_downloads_page",
+]
 
 logger = logging.getLogger(__name__)
-
-
-def jittered_sleep(base: float, jitter: float = 0.5) -> None:
-    """Sleep for base ± jitter*base seconds, randomized."""
-    delta = base * jitter
-    time.sleep(random.uniform(base - delta, base + delta))
-
-
-def _headers(token: str) -> dict[str, str]:
-    return {
-        "Accept": "application/json",
-        "Authorization": f"Bearer {token}",
-        "User-Agent": USER_AGENT,
-    }
 
 
 def fetch_downloads_page(
@@ -36,16 +28,12 @@ def fetch_downloads_page(
     page_number: int = 1,
     per_page: int = DEFAULT_PER_PAGE,
 ) -> dict[str, Any] | None:
-    """Fetch a single page from the /v4/my/downloads/ API."""
+    """Fetch a single page from the /v4/my/downloads/ API (None on failure)."""
     url = f"{DOWNLOADS_ENDPOINT}?page={page_number}&per_page={per_page}"
     try:
-        resp = requests.get(url, headers=_headers(token), timeout=TIMEOUT)
-        if not resp.ok:
-            logger.warning("API returned %d for page %d", resp.status_code, page_number)
-            return None
-        return resp.json()
+        return BeatportClient(token).get(url)
     except requests.RequestException as e:
-        logger.warning("Request failed for page %d: %s", page_number, e)
+        logger.warning("API failed for page %d: %s", page_number, e)
         return None
 
 
@@ -84,7 +72,9 @@ def fetch_all_downloads(
     all_tracks = list(parsed_first.results)
     total_count = parsed_first.count
     total_pages = max(1, (total_count + per_page - 1) // per_page)
-    page_limit = min(total_pages, start_page - 1 + max_pages) if max_pages else total_pages
+    page_limit = (
+        min(total_pages, start_page - 1 + max_pages) if max_pages else total_pages
+    )
 
     if progress_callback:
         progress_callback(1, total_pages, len(all_tracks))
@@ -103,6 +93,11 @@ def fetch_all_downloads(
             progress_callback(pg, total_pages, len(all_tracks))
 
     if max_pages and page_limit < total_pages:
-        logger.info("Reached session page limit (%d), stopped at page %d/%d.", max_pages, page_limit, total_pages)
+        logger.info(
+            "Reached session page limit (%d), stopped at page %d/%d.",
+            max_pages,
+            page_limit,
+            total_pages,
+        )
 
     return all_tracks, page_limit

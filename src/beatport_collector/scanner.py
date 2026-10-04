@@ -7,7 +7,10 @@ import logging
 import os
 import re
 import unicodedata
-from datetime import datetime
+from collections.abc import Callable
+from collections.abc import Set as AbstractSet
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from mutagen import File as MutagenFile
@@ -73,12 +76,12 @@ TITLE_SUFFIXES = re.compile(
 )
 
 SIMPLE_TITLE_SUFFIX = re.compile(
-    rf"\s+(original mix|extended mix|radio edit|club mix|dub mix|vocal mix|instrumental|remix|edit|rework)\s*$",
+    r"\s+(original mix|extended mix|radio edit|club mix|dub mix|vocal mix|instrumental|remix|edit|rework)\s*$",
     re.IGNORECASE,
 )
 
 DASH_SUFFIX = re.compile(
-    rf"\s+[-–—]\s+(original mix|extended mix|radio edit|club mix|dub mix|vocal mix|instrumental|remix|edit|rework)\s*$",
+    r"\s+[-–—]\s+(original mix|extended mix|radio edit|club mix|dub mix|vocal mix|instrumental|remix|edit|rework)\s*$",
     re.IGNORECASE,
 )
 
@@ -129,13 +132,8 @@ def clean_title(text: str) -> str:
     return normalize(text)
 
 
-def clean_title_condensed(text: str) -> str:
-    """Like :func:`clean_title` but also removes spaces between words."""
-    t = clean_title(text)
-    return t.replace(" ", "")
-
-
 # ── File scanning ────────────────────────────────────────────
+
 
 def find_music_files(directory: str, extensions: set[str]) -> list[str]:
     """Recursively find all music files with given extensions."""
@@ -160,11 +158,13 @@ def read_file_tags(filepath: str) -> dict[str, Any]:
             for key in audio.tags:
                 vals = audio.tags.get(key)
                 if vals:
-                    tags[key.lower()] = str(vals[0]) if isinstance(vals, list) else str(vals)
+                    tags[key.lower()] = (
+                        str(vals[0]) if isinstance(vals, list) else str(vals)
+                    )
 
             for name, frame_id in ID3_COMMON.items():
                 for variant in (frame_id, frame_id.lower()):
-                    if variant in tags and tags[variant]:
+                    if tags.get(variant):
                         tags[name] = str(tags[variant])
                         break
 
@@ -172,7 +172,7 @@ def read_file_tags(filepath: str) -> dict[str, Any]:
             tags["duration"] = audio.info.length
 
         return tags
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.debug("Could not read tags from %s: %s", filepath, e)
         return {}
 
@@ -205,6 +205,7 @@ def file_to_catalog_row(filepath: str) -> dict[str, str]:
 
 # ── Catalog ──────────────────────────────────────────────────
 
+
 def create_catalog_db(
     music_dir: str,
     extensions: set[str] | None = None,
@@ -216,7 +217,9 @@ def create_catalog_db(
     if extensions is None:
         extensions = DEFAULT_EXTENSIONS
 
-    output_path = output_path or f"music_catalog_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+    output_path = (
+        output_path or f"music_catalog_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}.db"
+    )
 
     with Catalog(output_path) as cat:
         count = cat.build(music_dir, extensions=extensions)
@@ -227,7 +230,72 @@ def create_catalog_db(
     return output_path
 
 
+def _sparse_entry(p: str) -> dict[str, object] | None:
+    """Manifest entry for one file, or None when its tags are complete."""
+    from beatport_collector import tagger
+
+    cur = tagger.current_tags(p)
+    if not cur:
+        return {"path": p, "missing": ["unreadable"]}
+    needs, missing = tagger.is_missing_key_tags(p)
+    if not needs:
+        return None
+    try:
+        audio = MutagenFile(p)
+        dur_ms = (
+            int(float(audio.info.length) * 1000)
+            if audio is not None and hasattr(audio.info, "length")
+            else 0
+        )
+    except Exception:  # noqa: BLE001
+        dur_ms = 0
+    return {
+        "path": p,
+        "artist": cur.get("artist", ""),
+        "title": cur.get("title", ""),
+        "album": cur.get("album", ""),
+        "genre": cur.get("genre", ""),
+        "date": cur.get("date", ""),
+        "duration_ms": dur_ms,
+        "missing": missing,
+    }
+
+
+def scan_sparse_manifest(
+    music_dir: str,
+    ext: str | None = None,
+    progress: Callable[[int, int], None] | None = None,
+) -> tuple[list[dict[str, object]], int]:
+    """Walk music_dir for files with missing/junk key tags.
+
+    Returns (sparse entries, total scanned). progress(sparse, total)
+    fires after each sparse entry so callers can report progress.
+    """
+    from beatport_collector.tagger import AUDIO_EXTENSIONS
+
+    exts = (
+        {f".{e.strip('.').lower()}" for e in ext.split(",")}
+        if ext
+        else set(AUDIO_EXTENSIONS)
+    )
+    sparse: list[dict[str, object]] = []
+    total = 0
+    for dirpath, _dirs, files in os.walk(music_dir):
+        for fn in files:
+            if os.path.splitext(fn)[1].lower() not in exts:
+                continue
+            total += 1
+            entry = _sparse_entry(os.path.join(dirpath, fn))
+            if entry is None:
+                continue
+            sparse.append(entry)
+            if progress is not None:
+                progress(len(sparse), total)
+    return sparse, total
+
+
 # ── Matching ─────────────────────────────────────────────────
+
 
 def _norm_artist(text: str) -> str:
     """Normalise artist string: lowercase, strip punctuation, collapse."""
@@ -260,8 +328,13 @@ def _parse_artists(text: str) -> list[str]:
     return [a.strip() for a in text.split("||") if a.strip()]
 
 
-def _artists_overlap(purchase_artists: set[str], entry_artists: set[str]) -> bool:
-    """Check if any two artist names match (exact or partial substring)."""
+def _artists_overlap(
+    purchase_artists: AbstractSet[str], entry_artists: AbstractSet[str]
+) -> bool:
+    """Check if any two artist names match (exact or partial substring).
+
+    Read-only, so any set-like collection works; ``frozenset`` is fine.
+    """
     if purchase_artists & entry_artists:
         return True
     for pa in purchase_artists:
@@ -271,108 +344,307 @@ def _artists_overlap(purchase_artists: set[str], entry_artists: set[str]) -> boo
     return False
 
 
+@dataclass(frozen=True)
+class _Query:
+    """A purchase row reduced to the keys the matching strategies compare on."""
+
+    isrc: str
+    artist: str
+    album: str
+    clean: str
+    condensed: str
+    artists: frozenset[str]
+    first_artist: str
+
+    @classmethod
+    def from_row(cls, row: dict[str, str]) -> _Query:
+        artist = _norm_artist(row.get("Artists", ""))
+        clean = clean_title(row.get("Title", ""))
+        parsed = _parse_artists(artist)
+        return cls(
+            isrc=row.get("ISRC", "").strip(),
+            artist=artist,
+            album=normalize(row.get("Release Title", "")),
+            clean=clean,
+            condensed=clean.replace(" ", ""),
+            artists=frozenset(parsed),
+            first_artist=parsed[0] if parsed else "",
+        )
+
+    @property
+    def has_fuzzy_keys(self) -> bool:
+        """Album + title + artist must all be present for strategies 9-13."""
+        return bool(self.album and self.clean and self.artist)
+
+
+@dataclass(frozen=True)
+class _Flat:
+    """One catalog entry with every key the scanning strategies need.
+
+    ``artists`` is pre-parsed so the fuzzy strategies do not re-parse the
+    same string once per candidate row.
+    """
+
+    path: str
+    artist: str
+    album: str
+    clean: str
+    condensed: str
+    artists: frozenset[str]
+
+
+@dataclass
+class _CatalogIndex:
+    """Lookup structures built once, then shared by every purchase row."""
+
+    by_isrc: dict[str, list[str]] = field(default_factory=dict)
+    by_album_clean: dict[tuple[str, str], list[str]] = field(default_factory=dict)
+    by_artist_clean: dict[tuple[str, str], list[str]] = field(default_factory=dict)
+    by_clean: dict[str, list[str]] = field(default_factory=dict)
+    flat: list[_Flat] = field(default_factory=list)
+
+    @classmethod
+    def build(cls, catalog: list[dict[str, str]]) -> _CatalogIndex:
+        idx = cls()
+        for entry in catalog:
+            isrc = entry.get("ISRC", "").strip()
+            if isrc:
+                idx.by_isrc.setdefault(isrc, []).append(entry.get("File Path", ""))
+
+            artist = _norm_artist(entry.get("Artist", ""))
+            album = normalize(entry.get("Album", ""))
+            clean = clean_title(entry.get("Title", ""))
+            idx.flat.append(
+                _Flat(
+                    path=entry.get("File Path", ""),
+                    artist=artist,
+                    album=album,
+                    clean=clean,
+                    condensed=clean.replace(" ", ""),
+                    artists=frozenset(_parse_artists(artist)),
+                )
+            )
+
+            if album and clean:
+                idx.by_album_clean.setdefault((album, clean), []).append(
+                    entry.get("File Path", "")
+                )
+            if artist and clean:
+                idx.by_artist_clean.setdefault((artist, clean), []).append(
+                    entry.get("File Path", "")
+                )
+            if clean:
+                idx.by_clean.setdefault(clean, []).append(entry.get("File Path", ""))
+        return idx
+
+
+def _album_match(a: str, b: str) -> bool:
+    """Album equality, tolerating one side being a substring of the other."""
+    return a == b or b in a or a in b
+
+
+def _first_overlapping(rows: list[_Flat], predicate: Callable[[_Flat], bool]) -> str:
+    """Path of the first row satisfying *predicate*, else ""."""
+    for row in rows:
+        if predicate(row):
+            return row.path
+    return ""
+
+
+# --- strategies, in priority order; each returns a path or "" ---
+
+
+def _by_isrc(q: _Query, ix: _CatalogIndex) -> str:
+    paths = ix.by_isrc.get(q.isrc) if q.isrc else None
+    return paths[0] if paths else ""
+
+
+def _album_artist_title(q: _Query, ix: _CatalogIndex) -> str:
+    if not (q.album and q.artist and q.clean):
+        return ""
+    rows = [r for r in ix.flat if r.album == q.album and r.clean == q.clean]
+    return _first_overlapping(rows, lambda r: _artists_overlap(q.artists, r.artists))
+
+
+def _album_title(q: _Query, ix: _CatalogIndex) -> str:
+    if not (q.album and q.clean):
+        return ""
+    paths = ix.by_album_clean.get((q.album, q.clean))
+    return paths[0] if paths else ""
+
+
+def _artist_title(q: _Query, ix: _CatalogIndex) -> str:
+    if not (q.artist and q.clean):
+        return ""
+    paths = ix.by_artist_clean.get((q.artist, q.clean)) or (
+        ix.by_artist_clean.get((q.first_artist, q.clean)) if q.first_artist else None
+    )
+    return paths[0] if paths else ""
+
+
+def _title_any_artist(q: _Query, ix: _CatalogIndex) -> str:
+    if not q.clean:
+        return ""
+    paths = ix.by_clean.get(q.clean)
+    return paths[0] if paths else ""
+
+
+def _album_title_prefix(q: _Query, ix: _CatalogIndex) -> str:
+    if not (q.album and q.clean):
+        return ""
+    prefix = f"{q.clean} "
+    for (album, clean), paths in ix.by_album_clean.items():
+        if album == q.album and clean.startswith(prefix):
+            return paths[0]
+    return ""
+
+
+def _artist_title_prefix(q: _Query, ix: _CatalogIndex) -> str:
+    if not (q.artist and q.clean):
+        return ""
+    prefix = f"{q.clean} "
+    for (artist, clean), paths in ix.by_artist_clean.items():
+        if artist in (q.artist, q.first_artist) and clean.startswith(prefix):
+            return paths[0]
+    return ""
+
+
+def _condensed_title(q: _Query, ix: _CatalogIndex) -> str:
+    """Spaces removed, scoped by album and (when present) artist."""
+    if not q.condensed or q.condensed == q.clean:
+        return ""
+    same = lambda r: r.condensed == q.condensed and r.album == q.album
+    if q.artist:
+        hit = _first_overlapping(
+            ix.flat, lambda r: same(r) and _artists_overlap(q.artists, r.artists)
+        )
+        if hit:
+            return hit
+    if q.album:
+        return _first_overlapping(ix.flat, same)
+    return ""
+
+
+def _album_substring_exact_title(q: _Query, ix: _CatalogIndex) -> str:
+    if not (q.album and q.clean and q.artist):
+        return ""
+    return _first_overlapping(
+        ix.flat,
+        lambda r: (
+            r.clean == q.clean
+            and _album_match(r.album, q.album)
+            and _artists_overlap(q.artists, r.artists)
+        ),
+    )
+
+
+def _condensed_album_substring(q: _Query, ix: _CatalogIndex) -> str:
+    if not (q.condensed and q.album) or q.condensed == q.clean:
+        return ""
+    return _first_overlapping(
+        ix.flat,
+        lambda r: r.condensed == q.condensed and _album_match(r.album, q.album),
+    )
+
+
+def _album_substring_title_prefix(q: _Query, ix: _CatalogIndex) -> str:
+    if not q.has_fuzzy_keys:
+        return ""
+    return _first_overlapping(
+        ix.flat,
+        lambda r: (
+            _album_match(r.album, q.album)
+            and (r.clean.startswith(q.clean) or q.clean.startswith(r.clean))
+            and _artists_overlap(q.artists, r.artists)
+        ),
+    )
+
+
+def _album_substring_fuzzy_title(q: _Query, ix: _CatalogIndex) -> str:
+    if not q.has_fuzzy_keys:
+        return ""
+    threshold = max(2, len(q.clean) // 5)
+    return _first_overlapping(
+        ix.flat,
+        lambda r: (
+            _album_match(r.album, q.album)
+            and bool(r.clean)
+            and abs(len(r.clean) - len(q.clean)) <= threshold
+            and _artists_overlap(q.artists, r.artists)
+            and levenshtein(q.clean, r.clean) <= threshold
+        ),
+    )
+
+
+def _album_substring_title_contains(q: _Query, ix: _CatalogIndex) -> str:
+    if not q.has_fuzzy_keys:
+        return ""
+    return _first_overlapping(
+        ix.flat,
+        lambda r: (
+            _album_match(r.album, q.album)
+            and bool(r.clean)
+            and (q.clean in r.clean or r.clean in q.clean)
+            and _artists_overlap(q.artists, r.artists)
+        ),
+    )
+
+
+_STRATEGIES: tuple[Callable[[_Query, _CatalogIndex], str], ...] = (
+    _by_isrc,
+    _album_artist_title,
+    _album_title,
+    _artist_title,
+    _title_any_artist,
+    _album_title_prefix,
+    _artist_title_prefix,
+    _condensed_title,
+    _album_substring_exact_title,
+    _condensed_album_substring,
+    _album_substring_title_prefix,
+    _album_substring_fuzzy_title,
+    _album_substring_title_contains,
+)
+
+
 def match_tracks_to_files(
     purchase_rows: list[dict[str, str]],
     catalog: list[dict[str, str]],
 ) -> tuple[list[dict[str, str]], int, int]:
     """Match purchase CSV rows to catalog entries.
 
-    Matching strategy (in priority order):
+    Matching strategies in priority order (mirrors Catalog._match_single,
+    so the in-memory and SQLite paths agree by construction):
       1. ISRC (exact)
       2. Normalised album + artist + title
       3. Normalised album + clean_title
-      4. Normalised artist + clean_title
-      5. Normalised clean_title (any artist match)
+      4. Normalised artist + clean_title (also first artist)
+      5. Normalised clean_title (any artist)
+      6. Album + purchase title is a prefix of the file title
+      7. Artist + purchase title is a prefix of the file title
+      8. Condensed titles (spaces removed)
+      9. Album substring + clean_title + artist overlap
+      10. Condensed + album substring
+      11. Album substring + title prefix either way + artist overlap
+      12. Album substring + Levenshtein distance + artist overlap
+      13. Album substring + title contains either way + artist overlap
 
     Returns (augmented_rows, matched_count, unmatched_count).
     """
-    # Index catalog by strategies
-    by_isrc: dict[str, list[dict[str, str]]] = {}
-    by_album_clean_title: dict[tuple[str, str], list[dict[str, str]]] = {}
-    by_artist_clean_title: dict[tuple[str, str], list[dict[str, str]]] = {}
-    by_clean_title: dict[str, list[dict[str, str]]] = {}
-
-    for entry in catalog:
-        isrc = entry.get("ISRC", "").strip()
-        if isrc:
-            by_isrc.setdefault(isrc, []).append(entry)
-
-        cat_artist = _norm_artist(entry.get("Artist", ""))
-        cat_album = normalize(entry.get("Album", ""))
-        cat_clean_title = clean_title(entry.get("Title", ""))
-
-        if cat_album and cat_clean_title:
-            by_album_clean_title.setdefault((cat_album, cat_clean_title), []).append(entry)
-        if cat_artist and cat_clean_title:
-            by_artist_clean_title.setdefault((cat_artist, cat_clean_title), []).append(entry)
-        if cat_clean_title:
-            by_clean_title.setdefault(cat_clean_title, []).append(entry)
+    index = _CatalogIndex.build(catalog)
 
     matched = 0
     unmatched = 0
     augmented: list[dict[str, str]] = []
 
     for row in purchase_rows:
+        query = _Query.from_row(row)
+        # First strategy to produce a path wins; order is the priority order.
         local_path = ""
-        purchase_isrc = row.get("ISRC", "").strip()
-        purchase_artist = _norm_artist(row.get("Artists", ""))
-        purchase_album = normalize(row.get("Release Title", ""))
-        purchase_clean = clean_title(row.get("Title", ""))
-
-        # Strategy 1: ISRC
-        if purchase_isrc and purchase_isrc in by_isrc:
-            local_path = by_isrc[purchase_isrc][0].get("File Path", "")
-
-        # Strategy 2: Album + artist + clean title
-        if not local_path and purchase_album and purchase_artist and purchase_clean:
-            key = (purchase_album, purchase_clean)
-            if key in by_album_clean_title:
-                for entry in by_album_clean_title[key]:
-                    entry_artist = _norm_artist(entry.get("Artist", ""))
-                    purchase_set = set(_parse_artists(purchase_artist))
-                    entry_set = set(_parse_artists(entry_artist))
-                    if _artists_overlap(purchase_set, entry_set):
-                        local_path = entry.get("File Path", "")
-                        break
-
-        # Strategy 3: Album + clean title
-        if not local_path and purchase_album and purchase_clean:
-            key = (purchase_album, purchase_clean)
-            if key in by_album_clean_title:
-                local_path = by_album_clean_title[key][0].get("File Path", "")
-
-        # Strategy 4: Artist + clean title
-        if not local_path and purchase_artist and purchase_clean:
-            candidates = by_artist_clean_title.get((purchase_artist, purchase_clean), [])
-            if not candidates:
-                # Try first artist
-                first = _parse_artists(purchase_artist)[0] if purchase_artist else ""
-                if first:
-                    candidates = by_artist_clean_title.get((first, purchase_clean), [])
-            if candidates:
-                local_path = candidates[0].get("File Path", "")
-
-            # Strategy 5: Just clean title (any artist)
-        if not local_path and purchase_clean:
-            candidates = by_clean_title.get(purchase_clean, [])
-            if candidates:
-                local_path = candidates[0].get("File Path", "")
-
-        # Strategy 6: Album + purchase_clean is prefix of file clean_title
-        if not local_path and purchase_album and purchase_clean:
-            for (album, ct), entries in by_album_clean_title.items():
-                if album == purchase_album and ct.startswith(f"{purchase_clean} "):
-                    local_path = entries[0].get("File Path", "")
-                    break
-
-        # Strategy 7: Artist + purchase_clean is prefix of file clean_title
-        if not local_path and purchase_artist and purchase_clean:
-            first = _parse_artists(purchase_artist)[0] if purchase_artist else purchase_artist
-            for (artist, ct), entries in by_artist_clean_title.items():
-                matched_artist = artist == purchase_artist or artist == first
-                if matched_artist and ct.startswith(f"{purchase_clean} "):
-                    local_path = entries[0].get("File Path", "")
-                    break
+        for strategy in _STRATEGIES:
+            local_path = strategy(query, index)
+            if local_path:
+                break
 
         out = dict(row)
         out["Local File Path"] = local_path
@@ -401,7 +673,7 @@ def scan(
     if extensions is None:
         extensions = DEFAULT_EXTENSIONS
 
-    with open(csv_path, encoding="utf-8") as f:
+    with open(csv_path, encoding="utf-8", newline="") as f:
         purchase_rows = list(csv.DictReader(f))
     logger.info("Loaded %d purchase rows from %s", len(purchase_rows), csv_path)
 
@@ -410,9 +682,15 @@ def scan(
 
     if catalog_path and os.path.exists(catalog_path):
         from beatport_collector.catalog import Catalog
+
         with Catalog(catalog_path) as cat:
             augmented, matched, unmatched = cat.match(purchase_rows)
-        logger.info("Matched %d/%d tracks using catalog %s", matched, len(purchase_rows), catalog_path)
+        logger.info(
+            "Matched %d/%d tracks using catalog %s",
+            matched,
+            len(purchase_rows),
+            catalog_path,
+        )
     else:
         files = find_music_files(music_dir, extensions)
         if not files:
@@ -422,7 +700,9 @@ def scan(
         augmented, matched, unmatched = match_tracks_to_files(purchase_rows, catalog)
 
     if output_path is None:
-        output_path = f"beatport_matched_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        output_path = (
+            f"beatport_matched_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}.csv"
+        )
 
     with open(output_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=list(MATCHED_CSV_FIELDS))

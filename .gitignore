@@ -12,8 +12,10 @@ build/
 dist/
 wheels/
 
-# Virtual environment
+# Virtual environments (per-platform: .venv on Windows, .venv-wsl on WSL —
+# set UV_PROJECT_ENVIRONMENT=.venv-wsl on Linux so the two never clash)
 .venv
+.venv-*
 
 # Beatport session (no longer used, legacy)
 beatport_session.json
@@ -23,13 +25,53 @@ beatport_session.json
 
 # Testing
 .pytest_cache/
+.hypothesis/
+
+# Mutation testing state (incremental cache, regenerable)
+mutants/
 
 # Playlists
 playlists/
+archive/
 
 # Music catalog (rebuilt from scratch each scan)
 music_catalog.db
+music_catalog.db-shm
+music_catalog.db-wal
 
 # IDE
 .vscode/
 .idea/
+
+# Local scan manifests (regenerable, absolute paths)
+sparse_*.json
+track_cache*.json
+*_progress.jsonl
+
+# Per-run state: progress logs, run logs, manifests. These embed absolute
+# paths into the listener's private music library, so they must never be
+# committed. Every one is regenerable by rerunning the command.
+*.jsonl
+*.log
+*.err
+*_todo*.json
+*_apply*.json
+gdrive_*
+
+# Temp files left by an interrupted write (cleaned up on the next run)
+.enrich-*
+.repair-*
+.trackcache-*
+*.tmp
+
+# Code inspection / visualization (local, regenerable)
+.codegraph/
+codegraph.html
+
+# Throwaway probes
+probe*.*
+_verify_tmp.py
+_diag*.py
+_recover*.py
+_cmp*.py
+*_tmp.py

@@ -5,12 +5,7 @@ from __future__ import annotations
 from beatport_collector.types import (
     Artist,
     Cart,
-    Genre,
-    Key,
-    Label,
     Price,
-    Release,
-    Track,
 )
 
 
@@ -26,7 +21,9 @@ class TestArtistConstructors:
 
 class TestCart:
     def test_from_dict_default(self) -> None:
-        c = Cart.from_dict({"id": 123, "name": "cart", "default": True, "person_id": 456})
+        c = Cart.from_dict(
+            {"id": 123, "name": "cart", "default": True, "person_id": 456}
+        )
         assert c.id == 123
         assert c.name == "cart"
         assert c.is_default is True
@@ -39,7 +36,9 @@ class TestCart:
 
 class TestPrice:
     def test_from_dict(self) -> None:
-        p = Price.from_dict({"code": "AUD", "symbol": "AU$", "value": 2.09, "display": "AU$2.09"})
+        p = Price.from_dict(
+            {"code": "AUD", "symbol": "AU$", "value": 2.09, "display": "AU$2.09"}
+        )
         assert p.code == "AUD"
         assert p.display == "AU$2.09"
         assert p.value == 2.09
