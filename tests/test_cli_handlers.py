@@ -271,10 +271,9 @@ def test_scan_and_playlist_happy_paths(monkeypatch, tmp_path) -> None:
 
 
 def test_handle_catalog_guard_missing_dir(tmp_path) -> None:
+    args = _ns(music_dir=str(tmp_path / "nodir"), ext=None, output=None)
     with pytest.raises(SystemExit):
-        cli_mod.handle_catalog(
-            _ns(music_dir=str(tmp_path / "nodir"), ext=None, output=None)
-        )
+        cli_mod.handle_catalog(args)
 
 
 def test_handle_catalog_delegates(monkeypatch, tmp_path) -> None:
@@ -291,10 +290,9 @@ def test_handle_catalog_delegates(monkeypatch, tmp_path) -> None:
 
 
 def test_handle_scan_tags_guard_missing_dir(tmp_path) -> None:
+    args = _ns(music_dir=str(tmp_path / "nodir"), ext=None, output="m.json")
     with pytest.raises(SystemExit):
-        cli_mod.handle_scan_tags(
-            _ns(music_dir=str(tmp_path / "nodir"), ext=None, output="m.json")
-        )
+        cli_mod.handle_scan_tags(args)
 
 
 def test_handle_scan_tags_writes_manifest(monkeypatch, tmp_path) -> None:
@@ -311,10 +309,9 @@ def test_handle_scan_tags_writes_manifest(monkeypatch, tmp_path) -> None:
 
 
 def test_handle_playlist_guard_missing_csv(tmp_path) -> None:
+    args = _ns(matched_csv=str(tmp_path / "no.csv"), output_dir="pl", rekordbox=False)
     with pytest.raises(SystemExit):
-        cli_mod.handle_playlist(
-            _ns(matched_csv=str(tmp_path / "no.csv"), output_dir="pl", rekordbox=False)
-        )
+        cli_mod.handle_playlist(args)
 
 
 def test_handle_playlist_delegates(monkeypatch, tmp_path) -> None:
@@ -330,16 +327,15 @@ def test_handle_download_delegates(monkeypatch) -> None:
 
 
 def test_handle_resume_guard_missing_csv() -> None:
+    args = _ns(
+        existing_csv="/definitely/missing.csv",
+        max_pages=1,
+        delay=0.0,
+        username="u",
+        password="p",
+    )
     with pytest.raises(SystemExit):
-        cli_mod.handle_resume(
-            _ns(
-                existing_csv="/definitely/missing.csv",
-                max_pages=1,
-                delay=0.0,
-                username="u",
-                password="p",
-            )
-        )
+        cli_mod.handle_resume(args)
 
 
 def test_handle_resume_delegates(monkeypatch, tmp_path) -> None:

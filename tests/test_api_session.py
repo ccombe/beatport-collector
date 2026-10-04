@@ -312,7 +312,8 @@ def test_write_csv_roundtrip(tmp_path) -> None:
 def test_bar_fills_proportionally_and_respects_width() -> None:
     assert cli_mod._bar(0, 100).count("█") == 0
     full = cli_mod._bar(100, 100)
-    assert "░" not in full and len(full) == 30  # brackets + 28 cells
+    assert "░" not in full
+    assert len(full) == 30  # brackets + 28 cells
     assert cli_mod._bar(50, 100).count("█") == 14
     assert len(cli_mod._bar(50, 100, width=10)) == 12
 
@@ -322,7 +323,8 @@ def test_progress_line_reports_counts() -> None:
 
     line = cli_mod._progress_line(10, 20, 60.0, Counter(matched=3), 2)
     assert "10/20" in line
-    assert "matched=3" in line and "updated=2" in line
+    assert "matched=3" in line
+    assert "updated=2" in line
     assert "ambig=0 nomatch=0 skip=0 err=0" in line
     assert "left" in line
 

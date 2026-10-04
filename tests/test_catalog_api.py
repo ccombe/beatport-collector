@@ -103,10 +103,8 @@ def test_search_tracks_plumbing(monkeypatch) -> None:
     monkeypatch.setattr(api_mod, "_sleep_with_jitter", lambda d: sleeps.append(d))
     out = api_mod.search_tracks("tok", "A", "Song", mix_name="Extended Mix")
     assert [t.id for t in out] == [9, 10]
-    assert (
-        "mix_name=Extended+Mix" in seen["url"]
-        and "order_by=publish_date" in seen["url"]
-    )
+    assert "mix_name=Extended+Mix" in seen["url"]
+    assert "order_by=publish_date" in seen["url"]
     assert sleeps == [2.0]
     out = api_mod.search_tracks("tok", "A", "Song", delay=0.0)
     assert "mix_name" not in seen["url"]
