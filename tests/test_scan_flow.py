@@ -131,7 +131,8 @@ def test_create_catalog_db_defaults_and_delegates(monkeypatch, tmp_path) -> None
 
     monkeypatch.setattr(catalog_mod, "Catalog", FakeCat)
     out = create_catalog_db(str(tmp_path), output_path=str(tmp_path / "c.db"))
-    assert out.endswith("c.db") and seen["dir"] == str(tmp_path)
+    assert out.endswith("c.db")
+    assert seen["dir"] == str(tmp_path)
     assert ".mp3" in seen["ext"]
     auto = create_catalog_db(str(tmp_path))
     assert "music_catalog_" in auto
@@ -154,12 +155,15 @@ def test_sparse_entry_unreadable_and_durations(monkeypatch) -> None:
         lambda p: SimpleNamespace(info=SimpleNamespace(length=2.0)),
     )
     entry = _sparse_entry("x.mp3")
-    assert entry is not None and entry["duration_ms"] == 2000
+    assert entry is not None
+    assert entry["duration_ms"] == 2000
     monkeypatch.setattr(scanner_mod, "MutagenFile", lambda p: None)
     entry = _sparse_entry("x.mp3")
-    assert entry is not None and entry["duration_ms"] == 0
+    assert entry is not None
+    assert entry["duration_ms"] == 0
     monkeypatch.setattr(
         scanner_mod, "MutagenFile", lambda p: (_ for _ in ()).throw(OSError("bad"))
     )
     entry = _sparse_entry("x.mp3")
-    assert entry is not None and entry["duration_ms"] == 0
+    assert entry is not None
+    assert entry["duration_ms"] == 0

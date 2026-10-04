@@ -132,7 +132,8 @@ def test_id3_artwork_roundtrip_and_replace(tmp_path) -> None:
     assert be.write_artwork(str(p), b"fakejpg", "image/jpeg", replace=False) is True
     assert be.has_artwork(str(p)) is True
     ids, pics = be.post_ids(str(p))
-    assert pics == 1 and "APIC:Cover" in ids or pics == 1
+    assert pics == 1
+    assert "APIC:Cover" in ids or pics == 1
     assert be.write_artwork(str(p), b"new", "image/jpeg", replace=True) is True
     assert be.post_ids(str(p))[1] == 1
     # APIC frame present but unreadable file -> False
@@ -190,12 +191,15 @@ def test_vorbis_read_write_artwork(monkeypatch) -> None:
     audio.pictures.append(SimpleNamespace(type=3))
     assert be.has_artwork("ok.flac") is True
     ids, pics = be.post_ids("ok.flac")
-    assert pics == 1 and "artist" in ids
+    assert pics == 1
+    assert "artist" in ids
     be.write_updates("ok.flac", {"artist": "New", "genre": "G"}, overwrite=False)
-    assert audio["artist"] == ["A"] and audio["genre"] == ["G"]
+    assert audio["artist"] == ["A"]
+    assert audio["genre"] == ["G"]
     be.write_updates("ok.flac", {"artist": "New"}, overwrite=True)
     assert audio["artist"] == ["New"]
-    assert audio["beatport_enriched"] == ["1"] and audio.saved
+    assert audio["beatport_enriched"] == ["1"]
+    assert audio.saved
     pic = SimpleNamespace(type=2)
     audio.pictures = [pic]
     assert be.write_artwork("ok.flac", b"d", "image/jpeg", replace=True) is True
@@ -257,16 +261,19 @@ def test_mp4_read_write_cycle(monkeypatch) -> None:
     audio["covr"] = [b"cover"]
     assert be.has_artwork("ok.m4a") is True
     ids, pics = be.post_ids("ok.m4a")
-    assert pics == 1 and "©nam" in ids
+    assert pics == 1
+    assert "©nam" in ids
     # bpm kept when legit and no overwrite
     be.write_updates("ok.m4a", {"bpm": "130", "title": "New"}, overwrite=False)
-    assert audio["tmpo"] == [128] and audio["©nam"] == ["Song"]
+    assert audio["tmpo"] == [128]
+    assert audio["©nam"] == ["Song"]
     be.write_updates(
         "ok.m4a",
         {"bpm": "130", "title": "New", "key": "8A", "label": "L2"},
         overwrite=True,
     )
-    assert audio["tmpo"] == [130] and audio["©nam"] == ["New"]
+    assert audio["tmpo"] == [130]
+    assert audio["©nam"] == ["New"]
     assert audio["----:com.apple.iTunes:initialkey"] == [b"8A"]
     assert audio["----:com.apple.iTunes:BEATPORT_ENRICHED"] == [b"1"]
     with pytest.raises(OSError):

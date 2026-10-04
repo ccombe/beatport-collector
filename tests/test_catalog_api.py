@@ -109,7 +109,8 @@ def test_search_tracks_plumbing(monkeypatch) -> None:
     )
     assert sleeps == [2.0]
     out = api_mod.search_tracks("tok", "A", "Song", delay=0.0)
-    assert "mix_name" not in seen["url"] and sleeps == [2.0]
+    assert "mix_name" not in seen["url"]
+    assert sleeps == [2.0]
     assert api_mod._get_with_backoff is fake_get  # module seam intact
 
 
@@ -121,7 +122,8 @@ def test_fetch_track_detail_url(monkeypatch) -> None:
         lambda url, token: (seen.update(url=url), _api_track(id=42))[1],
     )
     t = api_mod.fetch_track_detail("tok", 42)
-    assert t.id == 42 and seen["url"].endswith("/v4/catalog/tracks/42/")
+    assert t.id == 42
+    assert seen["url"].endswith("/v4/catalog/tracks/42/")
 
 
 def test_sleep_helpers_delegate(monkeypatch) -> None:

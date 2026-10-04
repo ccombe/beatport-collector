@@ -118,12 +118,15 @@ def test_snapshot_store_peek_get_and_flush(tmp_path) -> None:
 
     cache = tmp_path / "c.json"
     store = SnapshotStore("t", str(cache))
-    assert store.peek("7") is None and len(store) == 0
+    assert store.peek("7") is None
+    assert len(store) == 0
     store._cache["7"] = CT(id=7, name="N").to_cache()
     peeked = store.peek("7")
-    assert peeked is not None and peeked["name"] == "N"
+    assert peeked is not None
+    assert peeked["name"] == "N"
     gotten = store.get("7")
-    assert gotten is not None and gotten["name"] == "N"
+    assert gotten is not None
+    assert gotten["name"] == "N"
     store.flush()
     assert json.loads(cache.read_text())["7"]["name"] == "N"
 
@@ -152,7 +155,8 @@ def test_snapshot_store_get_fetches_and_caches_failure(monkeypatch, tmp_path) ->
         lambda token, tid: CT(id=tid, name="N"),
     )
     fetched = store.get("8")
-    assert fetched is not None and fetched["name"] == "N"
+    assert fetched is not None
+    assert fetched["name"] == "N"
     assert store.peek("8") is not None  # second call served from cache
     monkeypatch.setattr(
         br_mod.catalog_api,
@@ -199,9 +203,11 @@ def test_tally_key_breaker_and_callback(tmp_path) -> None:
     tally = _Tally(str(progress), 3, 2, lambda r, n, t: seen.append((n, t)))
     err = EnrichResult("e", "A", "T", EnrichStatus.ERROR)
     tally.report(err)
-    assert tally.streak == 1 and not tally.tripped
+    assert tally.streak == 1
+    assert not tally.tripped
     tally.report(err)
-    assert tally.tripped and tally.counts["stopped-early"] == 0
+    assert tally.tripped
+    assert tally.counts["stopped-early"] == 0
     ok = EnrichResult(
         "o",
         "A",
@@ -210,7 +216,8 @@ def test_tally_key_breaker_and_callback(tmp_path) -> None:
         applied=TagReport(path="o", updated=["genre"]),
     )
     tally.report(ok)
-    assert tally.counts["updated"] == 1 and tally.streak == 0
+    assert tally.counts["updated"] == 1
+    assert tally.streak == 0
     assert seen == [(1, 3), (2, 3), (3, 3)]
     assert _Tally._key(EnrichResult("x", "A", "T", EnrichStatus.MATCHED)) == "matched"
 

@@ -30,15 +30,18 @@ def test_read_tags_maps_frames_and_duration(monkeypatch) -> None:
     )
     monkeypatch.setattr(scanner_mod, "MutagenFile", lambda path: audio)
     tags = read_file_tags("x.mp3")
-    assert tags["artist"] == "Art" and tags["title"] == "Tit"
-    assert tags["genre"] == "House" and tags["duration"] == 125.0
+    assert tags["artist"] == "Art"
+    assert tags["title"] == "Tit"
+    assert tags["genre"] == "House"
+    assert tags["duration"] == 125.0
 
 
 def test_read_tags_without_length_has_no_duration(monkeypatch) -> None:
     audio = SimpleNamespace(tags={"TPE1": ["Art"]}, info=SimpleNamespace())
     monkeypatch.setattr(scanner_mod, "MutagenFile", lambda path: audio)
     tags = read_file_tags("x.mp3")
-    assert tags["artist"] == "Art" and "duration" not in tags
+    assert tags["artist"] == "Art"
+    assert "duration" not in tags
 
 
 def test_read_tags_failure_returns_empty(monkeypatch) -> None:

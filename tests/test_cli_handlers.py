@@ -83,7 +83,8 @@ def test_run_download_prompts_and_writes(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(cli_mod, "fetch_all_downloads", fake_fetch)
     out = str(tmp_path / "lib.csv")
     assert cli_mod.run_download(output_path=out, username="u", password="p") == out
-    assert seen["token"] == "tok" and seen["per_page"] == 100
+    assert seen["token"] == "tok"
+    assert seen["per_page"] == 100
     with open(out, encoding="utf-8", newline="") as f:
         assert len(list(csv.DictReader(f))) == 2
 
@@ -99,7 +100,8 @@ def test_run_download_defaults_output_name(monkeypatch, tmp_path) -> None:
     written: list = []
     monkeypatch.setattr(cli_mod, "write_csv", lambda tracks, path: written.append(path))
     out = cli_mod.run_download()
-    assert out.endswith("auto.csv") and written == [out]
+    assert out.endswith("auto.csv")
+    assert written == [out]
 
 
 def _write_existing_csv(path, rows: int) -> None:
@@ -251,7 +253,8 @@ def test_scan_and_playlist_happy_paths(monkeypatch, tmp_path) -> None:
         make_playlists=False,
         playlist_dir="pl",
     )
-    assert calls["extensions"] == {".mp3"} and "pl" not in calls
+    assert calls["extensions"] == {".mp3"}
+    assert "pl" not in calls
     cli_mod.run_scan_and_playlist(
         music_dir=str(tmp_path),
         csv_path=str(csv_path),
@@ -267,11 +270,14 @@ def test_scan_and_playlist_happy_paths(monkeypatch, tmp_path) -> None:
 # --- per-command handlers ---
 
 
-def test_handle_catalog_guards_and_delegates(monkeypatch, tmp_path) -> None:
+def test_handle_catalog_guard_missing_dir(tmp_path) -> None:
     with pytest.raises(SystemExit):
         cli_mod.handle_catalog(
             _ns(music_dir=str(tmp_path / "nodir"), ext=None, output=None)
         )
+
+
+def test_handle_catalog_delegates(monkeypatch, tmp_path) -> None:
     seen: dict = {}
     monkeypatch.setattr(
         cli_mod,
@@ -284,49 +290,46 @@ def test_handle_catalog_guards_and_delegates(monkeypatch, tmp_path) -> None:
     assert seen == {"d": str(tmp_path), "extensions": {".mp3"}, "output_path": "c.db"}
 
 
-def test_handle_scan_tags_guards_and_writes(monkeypatch, tmp_path) -> None:
+def test_handle_scan_tags_guard_missing_dir(tmp_path) -> None:
     with pytest.raises(SystemExit):
         cli_mod.handle_scan_tags(
             _ns(music_dir=str(tmp_path / "nodir"), ext=None, output="m.json")
         )
-    out = tmp_path / "m.json"
+
+
+def test_handle_scan_tags_writes_manifest(monkeypatch, tmp_path) -> None:
+    import json
+
     import beatport_collector.scanner as scanner_mod
 
+    out = tmp_path / "m.json"
     monkeypatch.setattr(
         scanner_mod, "scan_sparse_manifest", lambda *a, **k: ([{"path": "a"}], 10)
     )
     cli_mod.handle_scan_tags(_ns(music_dir=str(tmp_path), ext=None, output=str(out)))
-    import json
-
     assert json.loads(out.read_text()) == [{"path": "a"}]
 
 
-def test_handle_playlist_guards_and_delegates(monkeypatch, tmp_path) -> None:
+def test_handle_playlist_guard_missing_csv(tmp_path) -> None:
     with pytest.raises(SystemExit):
         cli_mod.handle_playlist(
             _ns(matched_csv=str(tmp_path / "no.csv"), output_dir="pl", rekordbox=False)
         )
+
+
+def test_handle_playlist_delegates(monkeypatch, tmp_path) -> None:
     m = tmp_path / "m.csv"
     m.write_text("x")
     monkeypatch.setattr(cli_mod, "create_playlists", lambda *a, **k: {"a": "pl/a.m3u"})
     cli_mod.handle_playlist(_ns(matched_csv=str(m), output_dir="pl", rekordbox=False))
 
 
-def test_handle_download_resume_scan_delegate(monkeypatch, tmp_path) -> None:
+def test_handle_download_delegates(monkeypatch) -> None:
     monkeypatch.setattr(cli_mod, "run_download", lambda **k: "d.csv")
     cli_mod.handle_download(_ns(max_pages=1, delay=0.0, username="u", password="p"))
-    existing = tmp_path / "e.csv"
-    existing.write_text("x")
-    monkeypatch.setattr(cli_mod, "run_resume", lambda **k: "r.csv")
-    cli_mod.handle_resume(
-        _ns(
-            existing_csv=str(existing),
-            max_pages=1,
-            delay=0.0,
-            username="u",
-            password="p",
-        )
-    )
+
+
+def test_handle_resume_guard_missing_csv() -> None:
     with pytest.raises(SystemExit):
         cli_mod.handle_resume(
             _ns(
@@ -337,6 +340,24 @@ def test_handle_download_resume_scan_delegate(monkeypatch, tmp_path) -> None:
                 password="p",
             )
         )
+
+
+def test_handle_resume_delegates(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(cli_mod, "run_resume", lambda **k: "r.csv")
+    existing = tmp_path / "e.csv"
+    existing.write_text("x")
+    cli_mod.handle_resume(
+        _ns(
+            existing_csv=str(existing),
+            max_pages=1,
+            delay=0.0,
+            username="u",
+            password="p",
+        )
+    )
+
+
+def test_handle_scan_delegates(monkeypatch) -> None:
     seen: dict = {}
     monkeypatch.setattr(cli_mod, "run_scan_and_playlist", lambda **k: seen.update(k))
     cli_mod.handle_scan(
@@ -396,7 +417,8 @@ def test_handle_enrich_reports_match_and_miss(monkeypatch, capsys) -> None:
         )
     )
     out = capsys.readouterr().out
-    assert "MATCH A - T" in out and "NO-CANDIDATES B - U" in out
+    assert "MATCH A - T" in out
+    assert "NO-CANDIDATES B - U" in out
     assert seen == {
         "token": "t",
         "paths": ["a.mp3", "b.mp3"],
@@ -444,9 +466,12 @@ def test_handle_batch_streams_and_reports(monkeypatch, capsys) -> None:
     monkeypatch.setattr(br_mod, "run", fake_run)
     # chunk_size=0 exercises the 10**9 fallback; limit trims the manifest.
     cli_mod.handle_batch(_batch_ns(chunk_size=0, limit=1))
-    assert seen["n"] == 1 and seen["chunk_size"] == 10**9
-    assert seen["token"] == "tok" and seen["apply_tags"] is False
-    assert seen["workers"] == 4 and seen["delay"] == 0.0
+    assert seen["n"] == 1
+    assert seen["chunk_size"] == 10**9
+    assert seen["token"] == "tok"
+    assert seen["apply_tags"] is False
+    assert seen["workers"] == 4
+    assert seen["delay"] == 0.0
     assert callable(seen["progress_cb"])
     assert "DONE 1 files" in capsys.readouterr().out
 
@@ -585,7 +610,8 @@ def test_progress_printer_counts_and_spins(monkeypatch, capsys) -> None:
     assert state["updated"] == 1
     assert state["last_spin"] == "A - T"
     out = capsys.readouterr().out
-    assert "20/20" in out and "now spinning: A - T" in out
+    assert "20/20" in out
+    assert "now spinning: A - T" in out
 
 
 def test_progress_printer_ignores_dry_run_match(monkeypatch, capsys) -> None:
@@ -648,7 +674,8 @@ def test_oauth_login_fetches_client_id_when_omitted(monkeypatch) -> None:
 
     monkeypatch.setattr(sess_mod.requests, "Session", _S)
     tok = sess_mod.oauth_login("u", "p")
-    assert tok.access_token == "t" and seen["params"]["client_id"] == "cid9"
+    assert tok.access_token == "t"
+    assert seen["params"]["client_id"] == "cid9"
 
 
 def test_run_resume_prompts_for_missing_credentials(monkeypatch, tmp_path) -> None:

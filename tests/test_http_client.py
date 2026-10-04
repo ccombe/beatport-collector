@@ -192,7 +192,8 @@ def test_request_failure_retries_then_succeeds(monkeypatch):
     monkeypatch.setattr(http_client.time, "sleep", lambda s: sleeps.append(s))
     client = BeatportClient(token="t", min_gap=0.0, max_retries=1)
     assert client.get("https://x/a") == {"ok": True}
-    assert len(calls) == 2 and sleeps == [2.0]
+    assert len(calls) == 2
+    assert sleeps == [2.0]
 
 
 def test_exhausted_429_raises_status(monkeypatch):

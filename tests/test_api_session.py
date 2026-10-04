@@ -220,7 +220,8 @@ def test_parse_downloads_page_defaults_and_mapping() -> None:
     page = api_mod.parse_downloads_page(
         {"count": 2, "results": [_track_item(1), _track_item(2)], "next": "n"}
     )
-    assert page.count == 2 and [t.id for t in page.results] == [1, 2]
+    assert page.count == 2
+    assert [t.id for t in page.results] == [1, 2]
     assert page.next_url == "n"
 
 
@@ -268,7 +269,8 @@ def test_fetch_all_paginates_and_reports_progress(monkeypatch) -> None:
         "t", per_page=2, delay=7.0, progress_callback=lambda *a: progress.append(a)
     )
     assert [t.id for t in tracks] == [1, 2, 3]
-    assert last == 2 and seen == [1, 2]
+    assert last == 2
+    assert seen == [1, 2]
     assert sleeps == [7.0]  # one gap pause between the two pages
     assert progress[0] == (1, 2, 1)
     assert progress[-1] == (2, 2, 3)
@@ -290,7 +292,8 @@ def test_fetch_all_stops_on_null_page(monkeypatch) -> None:
     seen, sleeps = _api_pages(monkeypatch, {1: _page(4, [1, 2]), 2: None})
     tracks, _ = api_mod.fetch_all_downloads("t", per_page=2)
     assert [t.id for t in tracks] == [1, 2]
-    assert seen == [1, 2] and sleeps == [5.0]
+    assert seen == [1, 2]
+    assert sleeps == [5.0]
 
 
 # --- cli pure helpers ---
@@ -318,7 +321,8 @@ def test_progress_line_reports_counts() -> None:
     from collections import Counter
 
     line = cli_mod._progress_line(10, 20, 60.0, Counter(matched=3), 2)
-    assert "10/20" in line and "matched=3" in line and "updated=2" in line
+    assert "10/20" in line
+    assert "matched=3" in line and "updated=2" in line
     assert "ambig=0 nomatch=0 skip=0 err=0" in line
     assert "left" in line
 
@@ -337,4 +341,5 @@ def test_safe_print_falls_back_to_ascii(monkeypatch) -> None:
 
     monkeypatch.setattr(builtins, "print", flaky)
     cli_mod._safe_print("café")  # must not raise; ascii fallback printed
-    assert seen and seen[0] == "caf?"
+    assert seen
+    assert seen[0] == "caf?"

@@ -120,7 +120,8 @@ def test_lost_frames_art_prefix_filters() -> None:
 
 def test_is_missing_unreadable_file(tmp_path) -> None:
     needs, missing = is_missing_key_tags(str(tmp_path / "ghost.mp3"))
-    assert needs is True and missing == ["unreadable"]
+    assert needs is True
+    assert missing == ["unreadable"]
 
 
 def test_apply_plan_rejects_unsupported_paths(tmp_path) -> None:
@@ -128,7 +129,8 @@ def test_apply_plan_rejects_unsupported_paths(tmp_path) -> None:
 
     # Real write, no updates at all: nothing to do, no file access.
     r = apply_plan(_plan(str(tmp_path / "ghost.mp3")), dry_run=False)
-    assert r.note == "nothing to do" and r.error == ""
+    assert r.note == "nothing to do"
+    assert r.error == ""
     # Updates but no backend claims the extension.
     other = tmp_path / "f.xyz"
     other.write_bytes(b"\x00" * 16)
@@ -164,7 +166,8 @@ def test_current_tags_unsupported_and_broken(tmp_path, monkeypatch) -> None:
 def test_is_missing_junk_title_counts(tmp_path) -> None:
     p = make_mp3(tmp_path / "a.mp3", artist="A", title="T myfreemp3.vip")
     needs, missing = is_missing_key_tags(str(p))
-    assert needs is True and any("junk" in m for m in missing)
+    assert needs is True
+    assert any("junk" in m for m in missing)
 
 
 def test_plan_updates_survives_art_probe_failure(monkeypatch, tmp_path) -> None:
@@ -190,12 +193,14 @@ def test_stage_temp_aborts(monkeypatch, tmp_path) -> None:
     p = make_mp3(tmp_path / "a.mp3", artist="A")
     # Unreadable source: the temp copy fails, nothing is written anywhere.
     r = _stage_temp(_plan(str(tmp_path / "ghost.mp3")))
-    assert isinstance(r, TagReport) and "temp copy failed" in r.error
+    assert isinstance(r, TagReport)
+    assert "temp copy failed" in r.error
     # Unsupported container: copy succeeds, but no backend claims .xyz.
     other = tmp_path / "f.xyz"
     other.write_bytes(b"\x00" * 32)
     r = _stage_temp(_plan(str(other)))
-    assert isinstance(r, TagReport) and "unsupported container" in r.error
+    assert isinstance(r, TagReport)
+    assert "unsupported container" in r.error
     # post_ids explodes: load failure aborts before any write. Patch the
     # lookup seam, not the shared backend class (the registry is module-level,
     # so class patching leaks across test ordering).
@@ -203,12 +208,14 @@ def test_stage_temp_aborts(monkeypatch, tmp_path) -> None:
     be.fail.add("post_ids")
     monkeypatch.setattr(tagger_mod, "backend_for", lambda path: be)
     r = _stage_temp(_plan(str(p)))
-    assert isinstance(r, TagReport) and "unreadable file" in r.error
+    assert isinstance(r, TagReport)
+    assert "unreadable file" in r.error
     # Tag write explodes: aborts, original untouched.
     be.fail.discard("post_ids")
     be.fail.add("write_updates")
     r = _stage_temp(_plan(str(p)))
-    assert isinstance(r, TagReport) and "tag write failed" in r.error
+    assert isinstance(r, TagReport)
+    assert "tag write failed" in r.error
 
 
 def test_stage_temp_artwork_paths(monkeypatch, tmp_path) -> None:
@@ -219,13 +226,16 @@ def test_stage_temp_artwork_paths(monkeypatch, tmp_path) -> None:
     # Fetch misses: staged fine, just no art embedded.
     monkeypatch.setattr(tagger_mod, "_fetch_artwork", lambda url: None)
     staged = _stage_temp(plan)
-    assert isinstance(staged, tuple) and staged[4] is False
+    assert isinstance(staged, tuple)
+    assert staged[4] is False
     # Fetch hits but the embed explodes: still staged, art marked off.
     monkeypatch.setattr(tagger_mod, "_fetch_artwork", lambda url: (b"d", "image/jpeg"))
     be.fail.add("write_artwork")
     staged = _stage_temp(plan)
-    assert isinstance(staged, tuple) and staged[4] is False
+    assert isinstance(staged, tuple)
+    assert staged[4] is False
     # Clean embed through the fake backend.
     be.fail.clear()
     staged = _stage_temp(plan)
-    assert isinstance(staged, tuple) and staged[4] is True
+    assert isinstance(staged, tuple)
+    assert staged[4] is True

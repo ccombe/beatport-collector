@@ -111,7 +111,8 @@ def test_search_recording_flow(monkeypatch) -> None:
         mb_mod, "_polite_get", lambda url: {"recordings": [_rec(score=10), _rec()]}
     )
     m = search_recording("Singer", "Song")
-    assert m is not None and m.recording_id == "r1"
+    assert m is not None
+    assert m.recording_id == "r1"
 
     def boom(url):
         raise requests.ConnectionError("down")

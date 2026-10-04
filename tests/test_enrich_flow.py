@@ -169,7 +169,8 @@ def test_enrich_one_skips_when_identity_unknown(monkeypatch, tmp_path) -> None:
     p = junk / "---.mp3"
     p.write_bytes(b"\x00" * 64)
     r = enrich_one("t", str(p))
-    assert r is not None and r.status == EnrichStatus.SKIPPED
+    assert r is not None
+    assert r.status == EnrichStatus.SKIPPED
 
 
 def test_enrich_one_matches_via_search(monkeypatch, tmp_path) -> None:
@@ -197,7 +198,8 @@ def test_enrich_one_matches_via_search(monkeypatch, tmp_path) -> None:
         ),
     )
     r = enrich_one("t", _mp3(tmp_path))
-    assert r is not None and r.status == EnrichStatus.MATCHED
+    assert r is not None
+    assert r.status == EnrichStatus.MATCHED
     assert r.beatport_id == 7
 
 
@@ -224,7 +226,8 @@ def test_enrich_one_prefers_direct_id_match(monkeypatch, tmp_path) -> None:
     )
     p = _mp3(tmp_path, "1234567_Song_Mix.mp3")
     r = enrich_one("t", p)
-    assert r is not None and r.status == EnrichStatus.MATCHED
+    assert r is not None
+    assert r.status == EnrichStatus.MATCHED
     assert seen["best"] is track
 
 
@@ -238,7 +241,8 @@ def test_enrich_one_reports_search_errors(monkeypatch, tmp_path) -> None:
 
     monkeypatch.setattr(enrich_mod.catalog_api, "search_tracks", boom)
     r = enrich_one("t", _mp3(tmp_path))
-    assert r is not None and r.status == EnrichStatus.ERROR
+    assert r is not None
+    assert r.status == EnrichStatus.ERROR
 
 
 def test_enrich_one_falls_back_to_musicbrainz(monkeypatch, tmp_path) -> None:
@@ -271,7 +275,8 @@ def test_enrich_one_flags_verify_failures(monkeypatch, tmp_path) -> None:
         lambda *a, **k: EnrichResult("p", "A", "T", EnrichStatus.MATCHED, applied=bad),
     )
     r = enrich_one("t", _mp3(tmp_path), dry_run=False)
-    assert r is not None and r.status == EnrichStatus.VERIFY_FAILED
+    assert r is not None
+    assert r.status == EnrichStatus.VERIFY_FAILED
 
 
 # --- batching ---
@@ -289,13 +294,15 @@ def test_enrich_files_respects_limit(monkeypatch, tmp_path) -> None:
         )[1],
     )
     out = enrich_files("t", paths, limit=2)
-    assert [r.path for r in out] == paths[:2] and calls == paths[:2]
+    assert [r.path for r in out] == paths[:2]
+    assert calls == paths[:2]
 
 
 def test_enrich_many_streams_with_progress() -> None:
     seen: list = []
     out = enrich_many("t", [], progress_cb=lambda r, n, total: seen.append((n, total)))
-    assert out == [] and seen == []
+    assert out == []
+    assert seen == []
 
 
 def test_enrich_many_runs_each_file(monkeypatch, tmp_path) -> None:
@@ -318,7 +325,8 @@ def test_enrich_many_runs_each_file(monkeypatch, tmp_path) -> None:
         workers=2,
         progress_cb=lambda r, n, total: progress.append((n, total)),
     )
-    assert len(out) == 2 and sorted(progress) == [(1, 2), (2, 2)]
+    assert len(out) == 2
+    assert sorted(progress) == [(1, 2), (2, 2)]
 
 
 # --- _apply_musicbrainz / apply_match ---
@@ -379,8 +387,10 @@ def test_apply_musicbrainz_resolves_match(monkeypatch) -> None:
         overwrite=False,
         art_overwrite=False,
     )
-    assert r.source == "musicbrainz" and r.beatport_date == "2023-05-06"
-    assert r.snapshot is not None and r.applied is applied
+    assert r.source == "musicbrainz"
+    assert r.beatport_date == "2023-05-06"
+    assert r.snapshot is not None
+    assert r.applied is applied
 
 
 def test_enrich_many_emit_marks_stuck_and_skips_none(monkeypatch) -> None:
@@ -416,8 +426,11 @@ def test_apply_match_dry_run_and_write(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(tagger_mod, "apply_plan", fake_apply)
     track = _track(artwork_url="http://x/a.jpg")
     r = apply_match(str(tmp_path), "A", "T", track, dry_run=True)
-    assert r.status == EnrichStatus.MATCHED and r.applied is None
-    assert r.plan is not None and calls == [True]
+    assert r.status == EnrichStatus.MATCHED
+    assert r.applied is None
+    assert r.plan is not None
+    assert calls == [True]
     calls.clear()
     r = apply_match(str(tmp_path), "A", "T", track, dry_run=False)
-    assert r.applied is not None and calls == [True, False]
+    assert r.applied is not None
+    assert calls == [True, False]
