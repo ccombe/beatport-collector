@@ -63,6 +63,47 @@ def _polite_get(url: str, max_retries: int = 3) -> dict[str, Any]:
     raise requests.HTTPError(f"MusicBrainz 503 persisted for {url}")
 
 
+def _evaluate(
+    rec: dict[str, Any], artist: str, duration_ms: int | None, tolerance_ms: int
+) -> MBMatch | None:
+    """Score one recording: gates first, MBMatch when everything fits."""
+    try:
+        score = int(rec.get("score", 0) or 0)
+    except (ValueError, TypeError):
+        score = 0
+    if score < 80:
+        return None
+    if duration_ms:
+        try:
+            rec_len = int(rec.get("length", 0) or 0)
+        except (ValueError, TypeError):
+            rec_len = 0
+        if rec_len and abs(rec_len - duration_ms) > tolerance_ms:
+            return None
+    credit = " ".join(ac.get("name", "") for ac in rec.get("artist-credit", [])).lower()
+    if artist.lower() not in credit and credit not in artist.lower():
+        first = artist.split(",")[0].strip().lower()
+        if not first or first not in credit:
+            return None
+    releases = rec.get("releases", [])
+    rel = releases[0] if releases else {}
+    labels = [
+        li.get("label", {}).get("name", "")
+        for li in rel.get("label-info", [])
+        if li.get("label", {}).get("name")
+    ]
+    return MBMatch(
+        recording_id=str(rec.get("id", "")),
+        title=str(rec.get("title", "")),
+        artist=credit,
+        release=str(rel.get("title", "")),
+        date=str(rel.get("date", "") or "")[:10],
+        label=labels[0] if labels else "",
+        score=score,
+        raw=rec,
+    )
+
+
 def search_recording(
     artist: str,
     title: str,
@@ -87,41 +128,7 @@ def search_recording(
         logger.warning("MusicBrainz search failed for %s - %s: %s", artist, title, e)
         return None
     for rec in data.get("recordings", []):
-        try:
-            score = int(rec.get("score", 0) or 0)
-        except (ValueError, TypeError):
-            score = 0
-        if score < 80:
-            continue
-        if duration_ms:
-            try:
-                rec_len = int(rec.get("length", 0) or 0)
-            except (ValueError, TypeError):
-                rec_len = 0
-            if rec_len and abs(rec_len - duration_ms) > tolerance_ms:
-                continue
-        credit = " ".join(
-            ac.get("name", "") for ac in rec.get("artist-credit", [])
-        ).lower()
-        if artist.lower() not in credit and credit not in artist.lower():
-            first = artist.split(",")[0].strip().lower()
-            if not first or first not in credit:
-                continue
-        releases = rec.get("releases", [])
-        rel = releases[0] if releases else {}
-        labels = [
-            li.get("label", {}).get("name", "")
-            for li in rel.get("label-info", [])
-            if li.get("label", {}).get("name")
-        ]
-        return MBMatch(
-            recording_id=str(rec.get("id", "")),
-            title=str(rec.get("title", "")),
-            artist=credit,
-            release=str(rel.get("title", "")),
-            date=str(rel.get("date", "") or "")[:10],
-            label=labels[0] if labels else "",
-            score=score,
-            raw=rec,
-        )
+        match = _evaluate(rec, artist, duration_ms, tolerance_ms)
+        if match is not None:
+            return match
     return None

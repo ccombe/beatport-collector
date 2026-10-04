@@ -8,6 +8,7 @@ import getpass
 import logging
 import os
 import sys
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -24,6 +25,7 @@ from beatport_collector.config import (
     DEFAULT_OUTPUT_DIR,
     MAX_PAGES_PER_SESSION,
 )
+from beatport_collector.enrich import EnrichResult, EnrichStatus
 from beatport_collector.http_client import jittered_sleep
 from beatport_collector.playlist import create_playlists
 from beatport_collector.scanner import create_catalog_db
@@ -112,7 +114,7 @@ def run_resume(
 
     # Load existing data
     existing = []
-    with open(existing_csv, encoding="utf-8") as f:
+    with open(existing_csv, encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         existing = list(reader)
 
@@ -170,6 +172,12 @@ def _extensions_from_arg(ext: str | None) -> set[str] | None:
     return {f".{ext.lstrip('.')}"}
 
 
+def _add_credentials(p: argparse.ArgumentParser) -> None:
+    """Beatport login flags, shared by every networked subcommand."""
+    p.add_argument("--username", type=str, default=None)
+    p.add_argument("--password", type=str, default=None)
+
+
 def run_scan_and_playlist(
     music_dir: str,
     csv_path: str,
@@ -206,7 +214,7 @@ def run_scan_and_playlist(
             print(f"  {name}: {path}")
 
 
-def _get_token(args: Any) -> str:
+def _get_token(args: argparse.Namespace) -> str:
     """OAuth access token from args or interactive prompt."""
     username, password = args.username, args.password
     if not username or not password:
@@ -222,7 +230,9 @@ def _safe_print(msg: str) -> None:
         print(msg.encode("ascii", "replace").decode("ascii"), flush=True)
 
 
-def _progress_printer(t0: float, total: int):
+def _progress_printer(
+    t0: float, total: int
+) -> tuple[Callable[[EnrichResult, int, int], None], dict[str, Any]]:
     """DJ-booth progress view: bar, VU, spinner, now-spinning line.
 
     Returns (callback, state) where state tracks updated/last counts.
@@ -240,15 +250,15 @@ def _progress_printer(t0: float, total: int):
         filled = int(width * n / max(total, 1))
         return f"[{'█' * filled}{'░' * (width - filled)}]"
 
-    def cb(r: Any, n: int, t: int) -> None:
+    def cb(r: EnrichResult, n: int, t: int) -> None:
         counts[r.status] += 1
         if (
-            r.status == "matched"
+            r.status == EnrichStatus.MATCHED
             and r.applied is not None
-            and (r.applied.get("updated") or r.applied.get("artwork_embedded"))
+            and (r.applied.updated or r.applied.artwork_embedded)
         ):
             state["updated"] = int(state["updated"]) + 1
-        if r.status == "matched":
+        if r.status == EnrichStatus.MATCHED:
             state["last_spin"] = f"{r.artist} - {r.title}"
         if n % 10 == 0 or n == t:
             el = time.monotonic() - t0
@@ -274,162 +284,175 @@ def _progress_printer(t0: float, total: int):
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+    _dispatch(build_parser().parse_args())
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Assemble the full argv parser. Pure construction, no side effects."""
     parser = argparse.ArgumentParser(
         description="Download your Beatport purchase history and build playlists."
     )
     sub = parser.add_subparsers(dest="command", required=True)
+    _download_parser(sub)
+    _resume_parser(sub)
+    _catalog_parser(sub)
+    _scan_tags_parser(sub)
+    _scan_parser(sub)
+    _playlist_parser(sub)
+    _enrich_parser(sub)
+    _batch_parser(sub)
+    _apply_parser(sub)
+    return parser
 
-    # --- download ---
-    download_parser = sub.add_parser("download", help="Full download from page 1")
-    download_parser.add_argument("--max-pages", type=int, default=MAX_PAGES_PER_SESSION)
-    download_parser.add_argument("--delay", type=float, default=5.0)
-    download_parser.add_argument("--username", type=str, default=None)
-    download_parser.add_argument("--password", type=str, default=None)
 
-    # --- resume ---
-    resume_parser = sub.add_parser("resume", help="Resume from an existing partial CSV")
-    resume_parser.add_argument("existing_csv", help="Path to existing partial CSV")
-    resume_parser.add_argument("--max-pages", type=int, default=MAX_PAGES_PER_SESSION)
-    resume_parser.add_argument("--delay", type=float, default=5.0)
-    resume_parser.add_argument("--username", type=str, default=None)
-    resume_parser.add_argument("--password", type=str, default=None)
+def _download_parser(sub):
+    p = sub.add_parser("download", help="Full download from page 1")
+    p.add_argument("--max-pages", type=int, default=MAX_PAGES_PER_SESSION)
+    p.add_argument("--delay", type=float, default=5.0)
+    _add_credentials(p)
+    return p
 
-    # --- catalog ---
-    catalog_parser = sub.add_parser(
+
+def _resume_parser(sub):
+    p = sub.add_parser("resume", help="Resume from an existing partial CSV")
+    p.add_argument("existing_csv", help="Path to existing partial CSV")
+    p.add_argument("--max-pages", type=int, default=MAX_PAGES_PER_SESSION)
+    p.add_argument("--delay", type=float, default=5.0)
+    _add_credentials(p)
+    return p
+
+
+def _catalog_parser(sub):
+    p = sub.add_parser(
         "catalog",
         help="Scan music dir and create a SQLite catalog DB of all files + ID3 tags",
     )
-    catalog_parser.add_argument("music_dir", help="Directory containing music files")
-    catalog_parser.add_argument(
+    p.add_argument("music_dir", help="Directory containing music files")
+    p.add_argument(
         "--ext",
         default=None,
         help="File extension to scan for (default: all known audio types)",
     )
-    catalog_parser.add_argument(
-        "--output", default=None, help="Output DB path (default: auto)"
-    )
+    p.add_argument("--output", default=None, help="Output DB path (default: auto)")
+    return p
 
-    # --- scan-tags: sparse-tag manifest for batch/apply ---
-    stag_parser = sub.add_parser(
+
+def _scan_tags_parser(sub):
+    p = sub.add_parser(
         "scan-tags",
         help="Walk a music dir and write sparse-tag manifest JSON (missing/junk tags)",
     )
-    stag_parser.add_argument("music_dir", help="Directory containing music files")
-    stag_parser.add_argument(
-        "--output", required=True, help="Output manifest JSON path"
-    )
-    stag_parser.add_argument(
+    p.add_argument("music_dir", help="Directory containing music files")
+    p.add_argument("--output", required=True, help="Output manifest JSON path")
+    p.add_argument(
         "--ext",
         default=None,
         help="Comma-separated extensions (default: mp3,flac,wav,aiff,aif,m4a)",
     )
+    return p
 
-    # --- scan ---
-    scan_parser = sub.add_parser(
-        "scan", help="Scan music dir and match files to purchase CSV"
-    )
-    scan_parser.add_argument("music_dir", help="Directory containing music files")
-    scan_parser.add_argument("--csv", required=True, help="Path to purchase CSV")
-    scan_parser.add_argument(
+
+def _scan_parser(sub):
+    p = sub.add_parser("scan", help="Scan music dir and match files to purchase CSV")
+    p.add_argument("music_dir", help="Directory containing music files")
+    p.add_argument("--csv", required=True, help="Path to purchase CSV")
+    p.add_argument(
         "--catalog",
         default=None,
         help="Path to pre-built music catalog DB (default: scan directly)",
     )
-    scan_parser.add_argument(
+    p.add_argument(
         "--ext",
         default=None,
         help="File extension to scan for (default: all known audio types)",
     )
-    scan_parser.add_argument(
-        "--output", default=None, help="Output CSV path (default: auto)"
-    )
-    scan_parser.add_argument(
+    p.add_argument("--output", default=None, help="Output CSV path (default: auto)")
+    p.add_argument(
         "--playlists",
         action="store_true",
         help="Also generate .m3u playlists from matched tracks",
     )
-    scan_parser.add_argument(
+    p.add_argument(
         "--playlist-dir",
         default="playlists",
         help="Output directory for playlists (default: playlists/)",
     )
-    scan_parser.add_argument(
+    p.add_argument(
         "--rekordbox",
         action="store_true",
         help="Also generate Rekordbox-compatible XML",
     )
+    return p
 
-    # --- playlist ---
-    playlist_parser = sub.add_parser(
-        "playlist", help="Generate .m3u playlists from a matched CSV"
-    )
-    playlist_parser.add_argument(
-        "matched_csv", help="Matched CSV with Local File Path column"
-    )
-    playlist_parser.add_argument(
+
+def _playlist_parser(sub):
+    p = sub.add_parser("playlist", help="Generate .m3u playlists from a matched CSV")
+    p.add_argument("matched_csv", help="Matched CSV with Local File Path column")
+    p.add_argument(
         "--output-dir", default="playlists", help="Output directory for playlists"
     )
-    playlist_parser.add_argument(
+    p.add_argument(
         "--rekordbox",
         action="store_true",
         help="Also generate Rekordbox-compatible XML",
     )
+    return p
 
-    # --- enrich ---
-    enrich_parser = sub.add_parser(
+
+def _enrich_parser(sub):
+    p = sub.add_parser(
         "enrich", help="Enrich MP3 ID3v2.3 tags from Beatport catalog (dry-run default)"
     )
-    enrich_parser.add_argument(
+    p.add_argument(
         "paths",
         nargs="+",
         help="Audio file(s) MP3/FLAC or file:// URIs (e.g. from foobar playlist)",
     )
-    enrich_parser.add_argument(
+    p.add_argument(
         "--limit",
         type=int,
         default=5,
         help="Max files missing genre/date/album to enrich",
     )
-    enrich_parser.add_argument(
+    p.add_argument(
         "--apply", action="store_true", help="Write tags (default is dry-run)"
     )
-    enrich_parser.add_argument(
+    p.add_argument(
         "--overwrite",
         action="store_true",
         help="Overwrite existing tags (never artwork)",
     )
-    enrich_parser.add_argument(
+    p.add_argument(
         "--art-overwrite",
         action="store_true",
         help="Also replace existing cover art",
     )
-    enrich_parser.add_argument(
+    p.add_argument(
         "--delay",
         type=float,
         default=2.0,
         help="Delay between catalog searches (rate-limit respect)",
     )
-    enrich_parser.add_argument("--username", default=None)
-    enrich_parser.add_argument("--password", default=None)
+    _add_credentials(p)
+    return p
 
-    # --- batch: enrich a JSON list of files, resumable via JSONL log ---
-    batch_parser = sub.add_parser(
+
+def _batch_parser(sub):
+    p = sub.add_parser(
         "batch",
         help="Enrich many files from a JSON list (see scope scan), resumable",
     )
-    batch_parser.add_argument("input_json", help="JSON array with {path,...} entries")
-    batch_parser.add_argument(
+    p.add_argument("input_json", help="JSON array with {path,...} entries")
+    p.add_argument(
         "--progress",
         default="batch_progress.jsonl",
         help="JSONL log of results (doubles as resume file)",
     )
-    batch_parser.add_argument(
-        "--limit", type=int, default=0, help="Max files this run (0 = all)"
-    )
-    batch_parser.add_argument(
+    p.add_argument("--limit", type=int, default=0, help="Max files this run (0 = all)")
+    p.add_argument(
         "--apply", action="store_true", help="Write tags (default is dry-run)"
     )
-    batch_parser.add_argument(
+    p.add_argument(
         "--apply-now",
         action="store_true",
         help=(
@@ -437,290 +460,272 @@ def main() -> None:
             "first file is tagged as soon as it resolves (no analysis phase)"
         ),
     )
-    batch_parser.add_argument(
+    p.add_argument(
         "--chunk-size",
         type=int,
         default=50,
         help="Files per commit; bounds how much a crash can cost (0 = all)",
     )
-    batch_parser.add_argument(
+    p.add_argument(
         "--max-failures",
         type=int,
         default=15,
         help="Stop after this many consecutive failures (circuit breaker)",
     )
-    batch_parser.add_argument(
+    p.add_argument(
         "--overwrite",
         action="store_true",
         help="Overwrite existing tags (never artwork)",
     )
-    batch_parser.add_argument(
+    p.add_argument(
         "--art-overwrite",
         action="store_true",
         help="Also replace existing cover art",
     )
-    batch_parser.add_argument(
+    p.add_argument(
         "--delay",
         type=float,
         default=2.0,
         help="Delay between catalog searches (rate-limit respect)",
     )
-    batch_parser.add_argument(
+    p.add_argument(
         "--workers",
         type=int,
         default=4,
         help="Parallel worker threads (up to 10; API stays polite via shared gate)",
     )
-    batch_parser.add_argument("--username", default=None)
-    batch_parser.add_argument("--password", default=None)
+    _add_credentials(p)
+    return p
 
-    # --- apply: write previously matched results (no re-search) ---
-    apply_parser = sub.add_parser(
+
+def _apply_parser(sub):
+    p = sub.add_parser(
         "apply",
         help="Apply dry-run matches from a batch JSONL log (fetches details once per unique track, then writes)",
     )
-    apply_parser.add_argument(
+    p.add_argument(
         "match_jsonl", help="Batch progress JSONL from a dry-run (matched rows reused)"
     )
-    apply_parser.add_argument(
+    p.add_argument(
         "--cache",
         default="track_cache.json",
         help="JSON cache of track details (reused across runs)",
     )
-    apply_parser.add_argument(
+    p.add_argument(
         "--progress",
         default="apply_progress.jsonl",
         help="JSONL log of applied results (resume file)",
     )
-    apply_parser.add_argument(
-        "--limit", type=int, default=0, help="Max files this run (0 = all)"
-    )
-    apply_parser.add_argument(
+    p.add_argument("--limit", type=int, default=0, help="Max files this run (0 = all)")
+    p.add_argument(
         "--art-overwrite",
         action="store_true",
         help="Also replace existing cover art",
     )
-    apply_parser.add_argument(
+    p.add_argument(
         "--delay",
         type=float,
         default=1.0,
         help="Delay between detail fetches (rate-limit respect)",
     )
-    apply_parser.add_argument(
+    p.add_argument(
         "--workers",
         type=int,
         default=4,
         help="Parallel worker threads (up to 10)",
     )
-    apply_parser.add_argument("--username", default=None)
-    apply_parser.add_argument("--password", default=None)
+    _add_credentials(p)
+    return p
 
-    args = parser.parse_args()
 
-    if args.command == "download":
-        out = run_download(
-            max_pages=args.max_pages,
-            delay=args.delay,
-            username=args.username,
-            password=args.password,
-        )
-        print(f"Done. Output: {out}")
+def handle_download(args: argparse.Namespace) -> None:
+    out = run_download(
+        max_pages=args.max_pages,
+        delay=args.delay,
+        username=args.username,
+        password=args.password,
+    )
+    print(f"Done. Output: {out}")
 
-    elif args.command == "resume":
-        if not os.path.exists(args.existing_csv):
-            print(f"File not found: {args.existing_csv}")
-            sys.exit(1)
-        out = run_resume(
-            existing_csv=args.existing_csv,
-            max_pages=args.max_pages,
-            delay=args.delay,
-            username=args.username,
-            password=args.password,
-        )
-        print(f"Done. Output: {out}")
 
-    elif args.command == "catalog":
-        if not os.path.isdir(args.music_dir):
-            print(f"Directory not found: {args.music_dir}")
-            sys.exit(1)
-        create_catalog_db(
-            args.music_dir,
-            extensions=_extensions_from_arg(args.ext),
-            output_path=args.output,
-        )
+def handle_resume(args: argparse.Namespace) -> None:
+    if not os.path.exists(args.existing_csv):
+        print(f"File not found: {args.existing_csv}")
+        sys.exit(1)
+    out = run_resume(
+        existing_csv=args.existing_csv,
+        max_pages=args.max_pages,
+        delay=args.delay,
+        username=args.username,
+        password=args.password,
+    )
+    print(f"Done. Output: {out}")
 
-    elif args.command == "scan-tags":
-        import json
 
-        from beatport_collector import tagger
-        from beatport_collector.tagger import AUDIO_EXTENSIONS
+def handle_catalog(args: argparse.Namespace) -> None:
+    if not os.path.isdir(args.music_dir):
+        print(f"Directory not found: {args.music_dir}")
+        sys.exit(1)
+    create_catalog_db(
+        args.music_dir,
+        extensions=_extensions_from_arg(args.ext),
+        output_path=args.output,
+    )
 
-        if not os.path.isdir(args.music_dir):
-            print(f"Directory not found: {args.music_dir}")
-            sys.exit(1)
-        exts = (
-            {f".{e.strip('.').lower()}" for e in args.ext.split(",")}
-            if args.ext
-            else set(AUDIO_EXTENSIONS)
-        )
-        sparse: list[dict[str, object]] = []
-        total = 0
-        for dirpath, _dirs, files in os.walk(args.music_dir):
-            for fn in files:
-                if os.path.splitext(fn)[1].lower() not in exts:
-                    continue
-                total += 1
-                p = os.path.join(dirpath, fn)
-                cur = tagger.current_tags(p)
-                if not cur:
-                    sparse.append({"path": p, "missing": ["unreadable"]})
-                    continue
-                needs, missing = tagger.is_missing_key_tags(p)
-                if not needs:
-                    continue
-                try:
-                    from mutagen import File as MutagenFile
 
-                    audio = MutagenFile(p)
-                    dur_ms = (
-                        int(float(audio.info.length) * 1000)
-                        if audio is not None and hasattr(audio.info, "length")
-                        else 0
-                    )
-                except Exception:  # noqa: BLE001 - duration optional for manifest
-                    dur_ms = 0
-                sparse.append(
-                    {
-                        "path": p,
-                        "artist": cur.get("artist", ""),
-                        "title": cur.get("title", ""),
-                        "album": cur.get("album", ""),
-                        "genre": cur.get("genre", ""),
-                        "date": cur.get("date", ""),
-                        "duration_ms": dur_ms,
-                        "missing": missing,
-                    }
-                )
-                if len(sparse) % 500 == 0:
-                    print(f"  ...{len(sparse)} sparse of {total} scanned")
-        with open(args.output, "w", encoding="utf-8") as f:
-            json.dump(sparse, f)
-        print(f"  {len(sparse)} sparse of {total} files -> {args.output}")
+def handle_scan_tags(args: argparse.Namespace) -> None:
+    import json
 
-    elif args.command == "scan":
-        run_scan_and_playlist(
-            music_dir=args.music_dir,
-            csv_path=args.csv,
-            ext=args.ext,
-            output=args.output,
-            make_playlists=args.playlists,
-            playlist_dir=args.playlist_dir,
-            catalog_path=args.catalog,
-            rekordbox_xml=args.rekordbox,
-        )
+    from beatport_collector.scanner import scan_sparse_manifest
 
-    elif args.command == "playlist":
-        if not os.path.exists(args.matched_csv):
-            print(f"File not found: {args.matched_csv}")
-            sys.exit(1)
-        created = create_playlists(
-            args.matched_csv, output_dir=args.output_dir, rekordbox_xml=args.rekordbox
-        )
-        for name, path in sorted(created.items()):
-            print(f"  {name}: {path}")
+    if not os.path.isdir(args.music_dir):
+        print(f"Directory not found: {args.music_dir}")
+        sys.exit(1)
 
-    elif args.command == "enrich":
-        from beatport_collector.enrich import enrich_files
+    def _progress(n_sparse: int, n_total: int) -> None:
+        if n_sparse % 500 == 0:
+            print(f"  ...{n_sparse} sparse of {n_total} scanned")
 
-        username, password = args.username, args.password
-        if not username or not password:
-            username, password = _prompt_credentials()
-        token = oauth_login(username, password)
-        results = enrich_files(
-            token.access_token,
-            args.paths,
-            limit=args.limit,
-            dry_run=not args.apply,
-            overwrite=args.overwrite,
-            art_overwrite=args.art_overwrite,
-            delay=args.delay,
-        )
-        for r in results:
-            if r.status == "matched" and r.plan:
-                _safe_print(
-                    f"  MATCH {r.artist} - {r.title} -> id={r.beatport_id} date={r.beatport_date}"
-                )
-                print(f"    updates={r.plan.get('updates')}")
-                if r.applied:
-                    print(f"    applied={r.applied}")
-            else:
-                _safe_print(f"  {r.status.upper()} {r.artist} - {r.title} ({r.path})")
+    sparse, total = scan_sparse_manifest(args.music_dir, args.ext, _progress)
+    with open(args.output, "w", encoding="utf-8") as f:
+        json.dump(sparse, f)
+    print(f"  {len(sparse)} sparse of {total} files -> {args.output}")
 
-    elif args.command == "batch":
-        import time
 
-        from beatport_collector.batch_runner import load_manifest, run
+def handle_scan(args: argparse.Namespace) -> None:
+    run_scan_and_playlist(
+        music_dir=args.music_dir,
+        csv_path=args.csv,
+        ext=args.ext,
+        output=args.output,
+        make_playlists=args.playlists,
+        playlist_dir=args.playlist_dir,
+        catalog_path=args.catalog,
+        rekordbox_xml=args.rekordbox,
+    )
 
-        manifest = load_manifest(args.input_json)
-        if args.limit:
-            manifest = manifest[: args.limit]
-        token = _get_token(args)
-        total = len(manifest)
-        t0 = time.monotonic()
-        cb, state = _progress_printer(t0, total)
-        counts = run(
-            manifest,
-            token,
-            apply_tags=args.apply,
-            progress_path=args.progress,
-            delay=args.delay,
-            workers=args.workers,
-            art_overwrite=args.art_overwrite,
-            progress_cb=cb,
-            apply_now=args.apply_now,
-            chunk_size=args.chunk_size if args.chunk_size > 0 else 10**9,
-            max_consecutive_failures=args.max_failures,
-        )
-        el = time.monotonic() - t0
-        print(
-            f"  DONE {total} files in {el / 60:.1f}m: "
-            f"updated={state['updated']} {dict(counts)}"
-        )
-        if counts.get("stopped-early"):
-            print(
-                "  STOPPED EARLY: too many consecutive failures. "
-                f"Fix the cause, then rerun the same command to resume from "
-                f"{args.progress}."
+
+def handle_playlist(args: argparse.Namespace) -> None:
+    if not os.path.exists(args.matched_csv):
+        print(f"File not found: {args.matched_csv}")
+        sys.exit(1)
+    created = create_playlists(
+        args.matched_csv, output_dir=args.output_dir, rekordbox_xml=args.rekordbox
+    )
+    for name, path in sorted(created.items()):
+        print(f"  {name}: {path}")
+
+
+def handle_enrich(args: argparse.Namespace) -> None:
+    from beatport_collector.enrich import enrich_files
+
+    username, password = args.username, args.password
+    if not username or not password:
+        username, password = _prompt_credentials()
+    token = oauth_login(username, password)
+    results = enrich_files(
+        token.access_token,
+        args.paths,
+        limit=args.limit,
+        dry_run=not args.apply,
+        overwrite=args.overwrite,
+        art_overwrite=args.art_overwrite,
+        delay=args.delay,
+    )
+    for r in results:
+        if r.status == EnrichStatus.MATCHED and r.plan:
+            _safe_print(
+                f"  MATCH {r.artist} - {r.title} -> id={r.beatport_id} date={r.beatport_date}"
             )
+            print(f"    updates={r.plan.updates}")
+            if r.applied:
+                print(f"    applied={r.applied}")
+        else:
+            _safe_print(f"  {r.status.upper()} {r.artist} - {r.title} ({r.path})")
 
-    elif args.command == "apply":
-        import time
 
-        from beatport_collector.batch_runner import load_matched, run
+def handle_batch(args: argparse.Namespace) -> None:
+    import time
 
-        manifest = load_matched(args.match_jsonl)
-        if args.limit:
-            manifest = manifest[: args.limit]
-        token = _get_token(args)
-        total = len(manifest)
-        t0 = time.monotonic()
-        cb, state = _progress_printer(t0, total)
-        counts = run(
-            manifest,
-            token,
-            apply_tags=True,
-            progress_path=args.progress,
-            cache_path=args.cache,
-            delay=args.delay,
-            workers=args.workers,
-            art_overwrite=args.art_overwrite,
-            progress_cb=cb,
-        )
-        el = time.monotonic() - t0
+    from beatport_collector.batch_runner import load_manifest, run
+
+    manifest = load_manifest(args.input_json)
+    if args.limit:
+        manifest = manifest[: args.limit]
+    token = _get_token(args)
+    total = len(manifest)
+    t0 = time.monotonic()
+    cb, state = _progress_printer(t0, total)
+    counts = run(
+        manifest,
+        token,
+        apply_tags=args.apply,
+        progress_path=args.progress,
+        delay=args.delay,
+        workers=args.workers,
+        art_overwrite=args.art_overwrite,
+        progress_cb=cb,
+        apply_now=args.apply_now,
+        chunk_size=args.chunk_size if args.chunk_size > 0 else 10**9,
+        max_consecutive_failures=args.max_failures,
+    )
+    el = time.monotonic() - t0
+    print(
+        f"  DONE {total} files in {el / 60:.1f}m: "
+        f"updated={state['updated']} {dict(counts)}"
+    )
+    if counts.get("stopped-early"):
         print(
-            f"  DONE {total} files in {el / 60:.1f}m: "
-            f"updated={state['updated']} {dict(counts)}"
+            "  STOPPED EARLY: too many consecutive failures. "
+            f"Fix the cause, then rerun the same command to resume from "
+            f"{args.progress}."
         )
+
+
+def handle_apply(args: argparse.Namespace) -> None:
+    import time
+
+    from beatport_collector.batch_runner import load_matched, run
+
+    manifest = load_matched(args.match_jsonl)
+    if args.limit:
+        manifest = manifest[: args.limit]
+    token = _get_token(args)
+    total = len(manifest)
+    t0 = time.monotonic()
+    cb, state = _progress_printer(t0, total)
+    counts = run(
+        manifest,
+        token,
+        apply_tags=True,
+        progress_path=args.progress,
+        cache_path=args.cache,
+        delay=args.delay,
+        workers=args.workers,
+        art_overwrite=args.art_overwrite,
+        progress_cb=cb,
+    )
+    el = time.monotonic() - t0
+    print(
+        f"  DONE {total} files in {el / 60:.1f}m: "
+        f"updated={state['updated']} {dict(counts)}"
+    )
+
+
+def _dispatch(args: argparse.Namespace) -> None:
+    """Execute the parsed command. All side effects live in handlers."""
+    _HANDLERS = {
+        "download": handle_download,
+        "resume": handle_resume,
+        "catalog": handle_catalog,
+        "scan-tags": handle_scan_tags,
+        "scan": handle_scan,
+        "playlist": handle_playlist,
+        "enrich": handle_enrich,
+        "batch": handle_batch,
+        "apply": handle_apply,
+    }
+    _HANDLERS[args.command](args)
 
 
 if __name__ == "__main__":

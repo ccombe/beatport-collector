@@ -5,20 +5,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import pytest
-
 from beatport_collector import tagger
 from beatport_collector.tagger import TagPlan
-
-
-def _mp3(tmp_path: Path) -> Path:
-    from mutagen.id3 import ID3, TIT2
-
-    f = tmp_path / "a.mp3"
-    tags = ID3()
-    tags.add(TIT2(encoding=3, text=["Original Title"]))
-    tags.save(str(f))
-    return f
+from tests.helpers import make_mp3
 
 
 def _plan(path: Path) -> TagPlan:
@@ -27,7 +16,7 @@ def _plan(path: Path) -> TagPlan:
 
 def test_transient_lock_is_retried_then_succeeds(tmp_path, monkeypatch):
     """A virtual drive holding a handle for ~1s must not lose the write."""
-    f = _mp3(tmp_path)
+    f = make_mp3(tmp_path / "a.mp3", artist=None)
     plan = _plan(f)
     real_replace = os.replace
     calls = {"n": 0}
@@ -42,15 +31,15 @@ def test_transient_lock_is_retried_then_succeeds(tmp_path, monkeypatch):
     monkeypatch.setattr(tagger.time, "sleep", lambda _s: None)
 
     report = tagger.apply_plan(plan, dry_run=False)
-    assert "error" not in report, report
-    assert report["verified"] is True
+    assert not report.error, report
+    assert report.verified is True
     assert calls["n"] == 3
     assert not list(tmp_path.glob(".enrich-*")), "temp file left behind"
 
 
 def test_persistent_lock_keeps_temp_and_reports(tmp_path, monkeypatch):
     """If the file really is held, keep the verified temp for recovery."""
-    f = _mp3(tmp_path)
+    f = make_mp3(tmp_path / "a.mp3", artist=None)
     plan = _plan(f)
 
     def always_locked(src, dst):
@@ -60,9 +49,9 @@ def test_persistent_lock_keeps_temp_and_reports(tmp_path, monkeypatch):
     monkeypatch.setattr(tagger.time, "sleep", lambda _s: None)
 
     report = tagger.apply_plan(plan, dry_run=False)
-    assert "replace failed" in report["error"]
-    assert report["verified"] is True
-    assert "temp kept at" in report["error"]
+    assert "replace failed" in report.error
+    assert report.verified is True
+    assert report.temp_kept, "verified temp path must be reported"
     # Original untouched, verified temp preserved.
     assert list(tmp_path.glob(".enrich-*")), "verified temp must survive"
     from beatport_collector.tagger import current_tags
@@ -72,7 +61,7 @@ def test_persistent_lock_keeps_temp_and_reports(tmp_path, monkeypatch):
 
 def test_no_retry_when_replace_is_clean(tmp_path, monkeypatch):
     """Happy path replaces exactly once — retries must not slow the common case."""
-    f = _mp3(tmp_path)
+    f = make_mp3(tmp_path / "a.mp3", artist=None)
     plan = _plan(f)
     calls = {"n": 0}
     real_replace = os.replace
@@ -83,14 +72,13 @@ def test_no_retry_when_replace_is_clean(tmp_path, monkeypatch):
 
     monkeypatch.setattr(tagger.os, "replace", counting_replace)
     report = tagger.apply_plan(plan, dry_run=False)
-    assert "error" not in report
+    assert not report.error
     assert calls["n"] == 1
 
 
-@pytest.mark.parametrize("attempts", [6])
-def test_retry_budget_is_bounded(attempts, tmp_path, monkeypatch):
+def test_retry_budget_is_bounded(tmp_path, monkeypatch):
     """Give up eventually rather than looping forever."""
-    f = _mp3(tmp_path)
+    f = make_mp3(tmp_path / "a.mp3", artist=None)
     plan = _plan(f)
     calls = {"n": 0}
 
@@ -101,4 +89,4 @@ def test_retry_budget_is_bounded(attempts, tmp_path, monkeypatch):
     monkeypatch.setattr(tagger.os, "replace", always_locked)
     monkeypatch.setattr(tagger.time, "sleep", lambda _s: None)
     tagger.apply_plan(plan, dry_run=False)
-    assert calls["n"] == attempts
+    assert calls["n"] == 6

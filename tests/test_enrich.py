@@ -199,10 +199,16 @@ class TestJunkDetection:
         assert junk and reason == "doubled-mix"
 
     def test_legit_kept(self) -> None:
-        junk, _ = tagger.is_junk_value("Mover (Extended Mix)")
-        assert junk is False
-        junk, _ = tagger.is_junk_value("House")
-        assert junk is False
+        assert tagger.is_junk_value("Mover (Extended Mix)") == (False, "")
+        assert tagger.is_junk_value("House") == (False, "")
+
+    def test_empty_is_not_junk(self) -> None:
+        assert tagger.is_junk_value("") == (False, "")
+
+    def test_bare_url_reason(self) -> None:
+        junk, reason = tagger.is_junk_value("promo from example.com")
+        assert junk is True
+        assert reason == "url"
 
     def test_junk_counts_as_missing(self, tmp_path) -> None:
         from mutagen.id3 import ID3
@@ -251,7 +257,7 @@ class TestFlacBackend:
         plan = tagger.plan_updates(dst, {"genre": "Nu Disco / Disco"})
         assert plan.updates.get("genre") == "Nu Disco / Disco"
         report = tagger.apply_plan(plan, dry_run=False)
-        assert report["verified"] is True
+        assert report.verified is True
         cur = tagger.current_tags(dst)
         assert cur["genre"] == "Nu Disco / Disco"
         # Everything we did not ask to change must survive.
@@ -283,7 +289,7 @@ class TestOtherBackends:
         plan = tagger.plan_updates(dst, {"genre": "IDM", "bpm": "120"})
         assert plan.updates.get("bpm") == "120"
         report = tagger.apply_plan(plan, dry_run=False)
-        assert report["verified"] is True
+        assert report.verified is True
         cur = tagger.current_tags(dst)
         assert cur["bpm"] == "120"
         assert cur["artist"] == before["artist"]  # preserved
@@ -412,14 +418,16 @@ class TestTaggerSafety:
     # files exercise the ID3 fallback reader.
 
     def _sparse_fixture(self, tmp_path) -> str:
-        from mutagen.id3 import ID3, TIT2, TPE1
+        from tests.helpers import make_mp3
 
-        dst = str(tmp_path / "sparse.mp3")
-        tags = ID3()
-        tags.add(TPE1(encoding=3, text="Ben Rau"))
-        tags.add(TIT2(encoding=3, text="Lemme Talk To Ya"))
-        tags.save(dst, v2_version=3)
-        return dst
+        return str(
+            make_mp3(
+                tmp_path / "sparse.mp3",
+                artist="Ben Rau",
+                title="Lemme Talk To Ya",
+                v2_version=3,
+            )
+        )
 
     def test_missing_detection(self, tmp_path) -> None:
         dst = self._sparse_fixture(tmp_path)
@@ -442,7 +450,7 @@ class TestTaggerSafety:
             dst, {"genre": "Tech House", "album": "Mover", "date": "2023-11-17"}
         )
         report = tagger.apply_plan(plan, dry_run=False)
-        assert report["verified"] is True
+        assert report.verified is True
         # Confirm ID3v2.3 on disk (widest compat: foobar/Serato/Rekordbox/Explorer).
         tags = ID3(dst)
         assert tags.version[1] == 3
@@ -456,10 +464,144 @@ class TestTaggerSafety:
     def test_existing_artwork_preserved_without_overwrite(self, tmp_path) -> None:
         src = _library("**/*.mp3")
         if not src:
-            return
+            pytest.skip("no mp3 in BPC_LIBRARY_DIR")
         dst = _make_mp3_copy(tmp_path, src)
         plan = tagger.plan_updates(
             dst, {"genre": "X"}, artwork_url="http://example.com/a.jpg", overwrite=False
         )
         assert plan.has_artwork_already is True
         assert plan.will_embed_artwork is False
+
+
+class TestApplyMatch:
+    """The single plan/apply path used by both Beatport and MB writes."""
+
+    def _sparse(self, tmp_path) -> str:
+        from tests.helpers import make_mp3
+
+        return str(
+            make_mp3(tmp_path / "m.mp3", artist="Bicep", title="Apricots", v2_version=3)
+        )
+
+    def _track(self) -> CatalogTrack:
+        return CatalogTrack(
+            id=1,
+            name="Apricots",
+            artists="Bicep",
+            genre="Electronica",
+            publish_date="2020-10-08",
+        )
+
+    def test_dry_run_reports_without_writing(self, tmp_path) -> None:
+        from beatport_collector.enrich import apply_match
+
+        dst = self._sparse(tmp_path)
+        before = os.path.getsize(dst)
+        result = apply_match(dst, "Bicep", "Apricots", self._track(), dry_run=True)
+        assert result.status == "matched"
+        assert result.plan is not None
+        assert result.plan.updates.get("genre") == "Electronica"
+        assert result.applied is None
+        assert os.path.getsize(dst) == before
+
+    def test_apply_writes_and_verifies(self, tmp_path) -> None:
+        from beatport_collector.enrich import apply_match
+
+        dst = self._sparse(tmp_path)
+        result = apply_match(dst, "Bicep", "Apricots", self._track(), dry_run=False)
+        assert result.status == "matched"
+        assert result.applied is not None
+        assert result.applied.verified is True
+        assert result.applied.error == ""
+        assert tagger.current_tags(dst)["genre"] == "Electronica"
+
+
+class TestSearchVariants:
+    """Retry waterfall: exact, full title, swapped roles. First hit wins."""
+
+    def _fake(self, monkeypatch, scripts):
+        calls: list[tuple[str, str, str]] = []
+        queue = [list(s) for s in scripts]
+
+        def fake(token, artist, title, mix_name="", delay=0.0, **kw):
+            calls.append((artist, title, mix_name))
+            return queue.pop(0) if queue else []
+
+        monkeypatch.setattr("beatport_collector.catalog_api.search_tracks", fake)
+        return calls
+
+    def _track(self) -> CatalogTrack:
+        return CatalogTrack(id=1, name="Mover", artists="Audiojack")
+
+    def test_exact_hit_makes_one_call(self, monkeypatch) -> None:
+        from beatport_collector import enrich
+
+        hit = [self._track()]
+        calls = self._fake(monkeypatch, [hit])
+        out = enrich._search_candidates(
+            "tok", "Audiojack", "Mover (Extended Mix)", "Mover", "Extended Mix", 0.0
+        )
+        assert out == hit
+        assert calls == [("Audiojack", "Mover", "Extended Mix")]
+
+    def test_full_title_retry(self, monkeypatch) -> None:
+        from beatport_collector import enrich
+
+        hit = [self._track()]
+        calls = self._fake(monkeypatch, [[], hit])
+        out = enrich._search_candidates(
+            "tok", "Audiojack", "Mover (Extended Mix)", "Mover", "Extended Mix", 0.0
+        )
+        assert out == hit
+        assert calls == [
+            ("Audiojack", "Mover", "Extended Mix"),
+            ("Audiojack", "Mover (Extended Mix)", ""),
+        ]
+
+    def test_swap_without_mix(self, monkeypatch) -> None:
+        """Reversed artist/title with a clean title still gets the swap."""
+        from beatport_collector import enrich
+
+        hit = [self._track()]
+        calls = self._fake(monkeypatch, [[], hit])
+        out = enrich._search_candidates(
+            "tok", "Mover", "Audiojack", "Audiojack", "", 0.0
+        )
+        assert out == hit
+        # Full-title retry dedupes against the identical exact query.
+        assert calls == [("Mover", "Audiojack", ""), ("Audiojack", "Mover", "")]
+
+    def test_junk_artist_cleaned(self, monkeypatch) -> None:
+        from beatport_collector import enrich
+
+        hit = [self._track()]
+        calls = self._fake(monkeypatch, [[], hit])
+        out = enrich._search_candidates(
+            "tok",
+            "Audiojack myfreemp3.vip",
+            "Mover (Extended Mix)",
+            "Mover",
+            "Extended Mix",
+            0.0,
+        )
+        assert out == hit
+        assert calls[0][0] == "Audiojack"
+        assert calls[1] == ("Audiojack", "Mover (Extended Mix)", "")
+
+    def test_all_miss_returns_empty(self, monkeypatch) -> None:
+        from beatport_collector import enrich
+
+        calls = self._fake(monkeypatch, [[], [], []])
+        out = enrich._search_candidates(
+            "tok", "Audiojack", "Mover (Extended Mix)", "Mover", "Extended Mix", 0.0
+        )
+        assert out == []
+        assert len(calls) == 3
+
+    def test_clean_artist(self) -> None:
+        from beatport_collector.enrich import _clean_artist
+
+        assert _clean_artist("Audiojack myfreemp3.vip") == "Audiojack"
+        assert _clean_artist("Audiojack 128") == "Audiojack"
+        assert _clean_artist("Audiojack") == "Audiojack"
+        assert _clean_artist("") == ""

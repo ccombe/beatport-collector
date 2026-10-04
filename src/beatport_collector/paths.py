@@ -13,7 +13,7 @@ import urllib.parse
 
 def wsl_to_windows(path: str) -> str:
     """Map /mnt/c/... back to C:\\... for reporting (foobar uses file://)."""
-    if path.startswith("/mnt/"):
+    if path.startswith("/mnt/") and len(path) > 5:
         drive = path[5].upper()
         rest = path[6:].replace("/", "\\")
         return f"{drive}:{rest}"

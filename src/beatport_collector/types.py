@@ -17,9 +17,9 @@ class Artist:
     def from_dict(cls, data: dict[str, Any]) -> Artist:
         return cls(
             id=int(data.get("id", 0)),
-            name=data.get("name", ""),
-            slug=data.get("slug", ""),
-            role=data.get("role", data.get("type", "")),
+            name=data.get("name", "") or "",
+            slug=data.get("slug", "") or "",
+            role=data.get("role", data.get("type", "")) or "",
         )
 
 
@@ -33,8 +33,8 @@ class Genre:
     def from_dict(cls, data: dict[str, Any]) -> Genre:
         return cls(
             id=int(data.get("id", 0)),
-            name=data.get("name", ""),
-            slug=data.get("slug", ""),
+            name=data.get("name", "") or "",
+            slug=data.get("slug", "") or "",
         )
 
 
@@ -49,9 +49,9 @@ class Key:
     def from_dict(cls, data: dict[str, Any]) -> Key:
         return cls(
             id=int(data.get("id", 0)),
-            name=data.get("name", ""),
-            camelot_number=data.get("camelot_number", 0),
-            camelot_letter=data.get("camelot_letter", ""),
+            name=data.get("name", "") or "",
+            camelot_number=data.get("camelot_number", 0) or 0,
+            camelot_letter=data.get("camelot_letter", "") or "",
         )
 
 
@@ -62,7 +62,7 @@ class Label:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Label:
-        return cls(id=int(data.get("id", 0)), name=data.get("name", ""))
+        return cls(id=int(data.get("id", 0)), name=data.get("name", "") or "")
 
 
 @dataclass
@@ -74,7 +74,9 @@ class Release:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Release:
         label = Label.from_dict(data["label"]) if data.get("label") else None
-        return cls(id=int(data.get("id", 0)), name=data.get("name", ""), label=label)
+        return cls(
+            id=int(data.get("id", 0)), name=data.get("name", "") or "", label=label
+        )
 
 
 @dataclass
@@ -88,10 +90,10 @@ class Price:
     def from_dict(cls, data: dict[str, Any]) -> Price:
         if isinstance(data, dict):
             return cls(
-                code=data.get("code", ""),
-                symbol=data.get("symbol", ""),
-                value=float(data.get("value", 0)),
-                display=data.get("display", ""),
+                code=data.get("code", "") or "",
+                symbol=data.get("symbol", "") or "",
+                value=float(data.get("value", 0) or 0),
+                display=data.get("display", "") or "",
             )
         return cls()
 
@@ -139,7 +141,7 @@ class Track:
 
         return cls(
             id=int(data.get("id", 0)),
-            name=data.get("name", ""),
+            name=data.get("name", "") or "",
             artists=artists,
             remixers=remixers,
             genre=genre,
@@ -149,14 +151,14 @@ class Track:
             key=key,
             price=price,
             bpm=data.get("bpm", 0) or 0,
-            isrc=data.get("isrc", ""),
-            catalog_number=data.get("catalog_number", ""),
-            slug=data.get("slug", ""),
-            publish_date=data.get("publish_date", ""),
-            purchase_date=data.get("purchase_date", ""),
+            isrc=data.get("isrc", "") or "",
+            catalog_number=data.get("catalog_number", "") or "",
+            slug=data.get("slug", "") or "",
+            publish_date=data.get("publish_date", "") or "",
+            purchase_date=data.get("purchase_date", "") or "",
             length_ms=data.get("length_ms", 0) or 0,
-            length=data.get("length", ""),
-            mix_name=data.get("mix_name", ""),
+            length=data.get("length", "") or "",
+            mix_name=data.get("mix_name", "") or "",
         )
 
 

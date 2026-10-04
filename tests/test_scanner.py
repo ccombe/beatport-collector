@@ -9,7 +9,9 @@ from beatport_collector.scanner import (
     clean_title,
     match_tracks_to_files,
     normalize,
+    scan_sparse_manifest,
 )
+from tests.helpers import make_mp3
 
 
 class TestNormalize:
@@ -243,3 +245,27 @@ class TestMatchTracksToFiles:
         for field in MATCHED_CSV_FIELDS:
             assert field in augmented[0], f"Missing field: {field}"
         assert augmented[0]["Local File Path"] == ""
+
+
+class TestSparseManifest:
+    def test_sparse_complete_and_skipped(self, tmp_path) -> None:
+        sparse = make_mp3(tmp_path / "sparse.mp3")
+        complete = make_mp3(
+            tmp_path / "full.mp3", genre="House", date="2024-01-01", album="LP"
+        )
+        (tmp_path / "notes.txt").write_text("not audio")
+        calls: list[tuple[int, int]] = []
+
+        entries, total = scan_sparse_manifest(
+            str(tmp_path), None, lambda s, t: calls.append((s, t))
+        )
+        assert total == 2
+        assert [e["path"] for e in entries] == [str(sparse)]
+        assert entries[0]["missing"] == ["genre", "date", "album"]
+        assert str(complete) not in [e["path"] for e in entries]
+        assert calls and calls[-1][0] == len(entries)
+
+    def test_ext_filter(self, tmp_path) -> None:
+        make_mp3(tmp_path / "a.mp3")
+        entries, total = scan_sparse_manifest(str(tmp_path), "flac")
+        assert (entries, total) == ([], 0)

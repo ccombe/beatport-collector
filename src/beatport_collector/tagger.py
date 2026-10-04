@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import shutil
 import tempfile
 import time
@@ -38,7 +37,12 @@ from typing import Any
 
 from mutagen.mp3 import MP3
 
-from beatport_collector.backends import BACKENDS, TagBackend, backend_for
+from beatport_collector.backends import (
+    BACKENDS,
+    TagBackend,
+    backend_for,
+    is_junk_value,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,46 +59,12 @@ TEXT_FRAMES = (
 )
 
 
-def _backend(path: str):
+def _backend(path: str) -> TagBackend | None:
     """Adapter for a path (None = unsupported container)."""
     return backend_for(path)
 
 
 AUDIO_EXTENSIONS = tuple(sorted(BACKENDS))
-
-
-# Promo/junk detectors — a value matching any of these counts as MISSING and
-# may be replaced with proper Beatport data (additive-only otherwise).
-JUNK_DOMAINS = (
-    "myfreemp3.vip",
-    "electronicfresh.com",
-    "djsoundtop.com",
-    "myfreemp3",
-    "electronicfresh",
-    "djsoundtop",
-)
-URL_RE = re.compile(
-    r"(https?://|www\.|\b[\w-]+\.(com|vip|net|org|ru|to|info|biz)\b)", re.IGNORECASE
-)
-TRAILING_BPM_RE = re.compile(r"\s+\(?1\d\d\)?\s*$")  # ' (Original Mix) 128', ' 124'
-DOUBLED_MIX_RE = re.compile(r"(\(extended mix\)|\(original mix\))\s*\1", re.IGNORECASE)
-
-
-def is_junk_value(value: str) -> tuple[bool, str]:
-    """Check a tag value for promo junk. Returns (is_junk, reason)."""
-    if not value:
-        return False, ""
-    v = value.strip()
-    if URL_RE.search(v):
-        for d in JUNK_DOMAINS:
-            if d in v.lower():
-                return True, f"promo-domain:{d}"
-        return True, "url"
-    if TRAILING_BPM_RE.search(v):
-        return True, "trailing-bpm"
-    if DOUBLED_MIX_RE.search(v):
-        return True, "doubled-mix"
-    return False, ""
 
 
 @dataclass
@@ -107,6 +77,42 @@ class TagPlan:
     reason: str = ""
     overwrite: bool = False
     art_overwrite: bool = False
+
+
+@dataclass
+class TagReport:
+    """Typed outcome of apply_plan (replaces the old string-keyed dict).
+
+    verified is meaningful only for real (non-dry-run) writes. error is ""
+    on success; temp_kept names the preserved temp copy when a verified
+    write could not replace the original.
+    """
+
+    path: str
+    dry_run: bool = False
+    updates: dict[str, str] = field(default_factory=dict)
+    artwork: str = ""
+    updated: list[str] = field(default_factory=list)
+    artwork_embedded: bool = False
+    verified: bool = False
+    error: str = ""
+    note: str = ""
+    temp_kept: str = ""
+
+    def to_dict(self) -> dict[str, object]:
+        """JSON-safe snapshot for the progress log (informational only)."""
+        return {
+            "path": self.path,
+            "dry_run": self.dry_run,
+            "updates": dict(self.updates),
+            "artwork": self.artwork,
+            "updated": list(self.updated),
+            "artwork_embedded": self.artwork_embedded,
+            "verified": self.verified,
+            "error": self.error,
+            "note": self.note,
+            "temp_kept": self.temp_kept,
+        }
 
 
 def _restore_dropped_frames(
@@ -221,14 +227,14 @@ def _verify_temp(
     )
 
 
-def _abort(path: str, reason: str, tmp_path: str, leftover: str) -> dict[str, Any]:
+def _abort(path: str, reason: str, tmp_path: str, leftover: str) -> TagReport:
     """Report an aborted write, naming any temp file we failed to remove."""
     if leftover:
-        return {
-            "path": path,
-            "error": f"{reason} | TEMP NOT DELETED, remove {tmp_path} ({leftover})",
-        }
-    return {"path": path, "error": reason}
+        return TagReport(
+            path=path,
+            error=f"{reason} | TEMP NOT DELETED, remove {tmp_path} ({leftover})",
+        )
+    return TagReport(path=path, error=reason)
 
 
 def _silent_unlink(path: str) -> str:
@@ -313,8 +319,6 @@ def plan_updates(
         has_art = False
     updates: dict[str, str] = {}
     junk_replaced: dict[str, str] = {}
-    if cur is None:
-        return TagPlan(path=path, reason="unreadable")
     for key, new_val in beatport.items():
         if key not in TEXT_FRAMES or not new_val:
             continue
@@ -346,7 +350,7 @@ def _fetch_artwork(url: str, timeout: int = 30) -> tuple[bytes, str] | None:
     return fetch_artwork(url, timeout=timeout)
 
 
-def apply_plan(plan: TagPlan, dry_run: bool = True, v2_version: int = 3) -> dict:
+def apply_plan(plan: TagPlan, dry_run: bool = True, v2_version: int = 3) -> TagReport:
     """Apply a TagPlan. dry_run=True writes nothing.
 
     Real writes are atomic-with-verify and leave no backup files behind:
@@ -358,28 +362,22 @@ def apply_plan(plan: TagPlan, dry_run: bool = True, v2_version: int = 3) -> dict
       4. only then ``os.replace()`` the temp over the original
 
     If verification fails the temp copy is deleted and the original is
-    never touched. Returns a report dict.
+    never touched. Returns a TagReport.
     """
     if dry_run:
-        return {
-            "path": plan.path,
-            "dry_run": True,
-            "updates": dict(plan.updates),
-            "artwork": plan.artwork_url if plan.will_embed_artwork else "",
-        }
+        return TagReport(
+            path=plan.path,
+            dry_run=True,
+            updates=dict(plan.updates),
+            artwork=plan.artwork_url if plan.will_embed_artwork else "",
+        )
     if not plan.updates and not plan.will_embed_artwork:
-        return {
-            "path": plan.path,
-            "dry_run": False,
-            "updated": [],
-            "note": "nothing to do",
-        }
+        return TagReport(path=plan.path, updated=[], note="nothing to do")
 
     if _backend(plan.path) is None or not os.path.exists(plan.path):
-        return {
-            "path": plan.path,
-            "error": f"not a supported audio file {AUDIO_EXTENSIONS}",
-        }
+        return TagReport(
+            path=plan.path, error=f"not a supported audio file {AUDIO_EXTENSIONS}"
+        )
 
     orig_len = _audio_length(plan.path)
 
@@ -435,17 +433,16 @@ def apply_plan(plan: TagPlan, dry_run: bool = True, v2_version: int = 3) -> dict
     check = _verify_temp(adapter, plan, tmp_path, pre_ids, pre_pics, orig_len)
     if not check.ok:
         _silent_unlink(tmp_path)  # original never touched
-        return {
-            "path": plan.path,
-            "dry_run": False,
-            "updated": sorted(plan.updates.keys()),
-            "artwork_embedded": art_ok,
-            "verified": False,
-            "error": (
+        return TagReport(
+            path=plan.path,
+            updated=sorted(plan.updates.keys()),
+            artwork_embedded=art_ok,
+            verified=False,
+            error=(
                 f"verify failed, original untouched "
                 f"(lost={sorted(check.lost)} audio_ok={check.audio_ok})"
             ),
-        }
+        )
 
     # 4. Verified — atomically replace the original (same filesystem).
     #    Cloud/virtual drives (Google Drive) hold transient handles, so a
@@ -463,18 +460,17 @@ def apply_plan(plan: TagPlan, dry_run: bool = True, v2_version: int = 3) -> dict
             )
             time.sleep(0.4 * (attempt + 1))
     if replace_err is not None:
-        return {
-            "path": plan.path,
-            "dry_run": False,
-            "updated": sorted(plan.updates.keys()),
-            "artwork_embedded": art_ok,
-            "verified": True,
-            "error": f"verified but replace failed, temp kept at {tmp_path}: {replace_err}",
-        }
-    return {
-        "path": plan.path,
-        "dry_run": False,
-        "updated": sorted(plan.updates.keys()),
-        "artwork_embedded": art_ok,
-        "verified": True,
-    }
+        return TagReport(
+            path=plan.path,
+            updated=sorted(plan.updates.keys()),
+            artwork_embedded=art_ok,
+            verified=True,
+            error=f"verified but replace failed: {replace_err}",
+            temp_kept=tmp_path,
+        )
+    return TagReport(
+        path=plan.path,
+        updated=sorted(plan.updates.keys()),
+        artwork_embedded=art_ok,
+        verified=True,
+    )

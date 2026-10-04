@@ -35,10 +35,10 @@ def test_queued_work_is_never_marked_stuck():
     def on_done(i: int, r: int | None, was_abandoned: bool) -> None:
         (abandoned if was_abandoned else done).append(i)
 
-    # stuck_after is below per-item runtime but above pool drain time only if
-    # ageing starts at submit; here it must NOT trip, so keep it generous
-    # relative to total runtime and assert nothing was abandoned.
-    run_pool(items, slow, on_done, workers=2, stuck_after=10.0)
+    # stuck_after sits between per-item runtime (0.25s) and the max queue
+    # wait under submit-time ageing (~1.25s): the old bug trips it, correct
+    # start-time ageing never does.
+    run_pool(items, slow, on_done, workers=2, stuck_after=1.0)
     assert not abandoned
     assert sorted(done) == items
 
@@ -102,6 +102,63 @@ def test_zero_workers_does_not_deadlock():
     got: list[int | None] = []
     run_pool([1, 2], lambda i: i, lambda i, r, _a: got.append(r), workers=0)
     assert sorted(x for x in got if x is not None) == [1, 2]
+
+
+def test_zero_workers_runs_on_a_single_worker():
+    """workers=0 clamps to one thread — a second worker must never appear.
+
+    Mutation catch: max(1, workers) -> None/max(2, workers) both survived.
+    """
+    active = 0
+    peak = 0
+    lock = threading.Lock()
+    gate = threading.Event()
+
+    def work(i: int) -> int:
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        gate.wait(5)  # hold the worker while a second item is pending
+        with lock:
+            active -= 1
+        return i
+
+    done: list[int] = []
+    t = threading.Thread(
+        target=run_pool,
+        args=([1, 2], work, lambda i, r, _a: done.append(i)),
+        kwargs={"workers": 0},
+        daemon=True,
+    )
+    t.start()
+    time.sleep(1.0)  # both items are queued; a 2nd worker would start item 2
+    assert peak == 1, f"expected a single worker, saw concurrency {peak}"
+    gate.set()
+    t.join(10)
+    assert sorted(done) == [1, 2]
+
+
+def test_results_stream_instead_of_arriving_at_the_end():
+    """Reaping happens per finished task, not once the whole batch is done.
+
+    Mutation catch: dropping return_when=FIRST_COMPLETED survived.
+    """
+    first_at: list[float] = []
+    start = time.monotonic()
+
+    def slow(i: int) -> int:
+        time.sleep(0.3)
+        return i
+
+    def on_done(i: int, r: int | None, _a: bool) -> None:
+        if not first_at:
+            first_at.append(time.monotonic())
+
+    # 8 x 0.3s over 2 workers drains in ~1.2s; streaming reports at ~0.3s.
+    run_pool(range(8), slow, on_done, workers=2)
+    total = time.monotonic() - start
+    assert first_at and first_at[0] - start < total * 0.6
 
 
 @pytest.mark.parametrize("workers", [1, 3, 8])

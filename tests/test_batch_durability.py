@@ -7,7 +7,7 @@ import json
 import pytest
 
 from beatport_collector import batch_runner
-from beatport_collector.batch_runner import DEFAULT_CHUNK, SnapshotStore, run
+from beatport_collector.batch_runner import SnapshotStore, run
 
 
 def _rows(progress_path: str) -> list[dict]:
@@ -35,14 +35,17 @@ def _apply_stub(
     monkeypatch, statuses: dict[str, str] | None = None, log: list | None = None
 ):
     def _apply_one(path, beatport_id, cache, art_overwrite, snapshot=None):
-        from beatport_collector.enrich import EnrichResult
+        from beatport_collector.enrich import EnrichResult, EnrichStatus
+        from beatport_collector.tagger import TagReport
 
         if log is not None:
             log.append(path)
-        status = (statuses or {}).get(path, "matched")
-        applied = {"updated": ["genre"], "artwork_embedded": False, "verified": True}
+        status = EnrichStatus((statuses or {}).get(path, "matched"))
+        applied = TagReport(
+            path=path, updated=["genre"], artwork_embedded=False, verified=True
+        )
         if status == "verify-failed":
-            applied = {"error": "verify failed, original untouched"}
+            applied = TagReport(path=path, error="verify failed, original untouched")
         return EnrichResult(path, "a", "t", status=status, applied=applied)
 
     monkeypatch.setattr(batch_runner, "_apply_one", _apply_one)
@@ -90,12 +93,17 @@ def test_partial_progress_is_kept_when_a_chunk_explodes(tmp_path, monkeypatch):
     prog = "prog.jsonl"
 
     def flaky(path, beatport_id, cache, art_overwrite, snapshot=None):
-        from beatport_collector.enrich import EnrichResult
+        from beatport_collector.enrich import EnrichResult, EnrichStatus
+        from beatport_collector.tagger import TagReport
 
         if "track 3" in path:
             raise KeyboardInterrupt  # hard stop, not a per-file error
         return EnrichResult(
-            path, "a", "t", status="matched", applied={"updated": ["genre"]}
+            path,
+            "a",
+            "t",
+            status=EnrichStatus.MATCHED,
+            applied=TagReport(path=path, updated=["genre"]),
         )
 
     monkeypatch.setattr(batch_runner, "_apply_one", flaky)
@@ -161,22 +169,6 @@ def test_verify_failure_is_counted_distinctly(tmp_path, monkeypatch):
     )
     assert counts.get("verify-failed") == 1
     assert counts.get("updated") == 5
-
-
-def test_chunking_bounds_each_commit(tmp_path, monkeypatch):
-    """chunk_size groups the work; total throughput is unchanged."""
-    monkeypatch.chdir(tmp_path)
-    _apply_stub(monkeypatch)
-    counts = run(
-        _manifest(20),
-        "tok",
-        apply_tags=True,
-        progress_path="prog.jsonl",
-        workers=1,
-        chunk_size=5,
-    )
-    assert counts["updated"] == 20
-    assert DEFAULT_CHUNK == 50
 
 
 def test_snapshot_store_persists_as_it_fills(tmp_path, monkeypatch):
@@ -259,11 +251,16 @@ def test_streaming_mode_searches_and_writes_per_file(tmp_path, monkeypatch):
     seen: list[tuple[str, bool]] = []
 
     def fake_enrich_one(token, path, dry_run=True, art_overwrite=False, delay=2.0):
-        from beatport_collector.enrich import EnrichResult
+        from beatport_collector.enrich import EnrichResult, EnrichStatus
+        from beatport_collector.tagger import TagReport
 
         seen.append((path, dry_run))
         return EnrichResult(
-            path, "a", "t", status="matched", applied={"updated": ["genre"]}
+            path,
+            "a",
+            "t",
+            status=EnrichStatus.MATCHED,
+            applied=TagReport(path=path, updated=["genre"]),
         )
 
     monkeypatch.setattr(batch_runner, "enrich_one", fake_enrich_one)

@@ -18,12 +18,14 @@ import os
 import tempfile
 import threading
 from collections import Counter
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from beatport_collector import catalog_api, http_client
 from beatport_collector.enrich import (
     EnrichResult,
+    EnrichStatus,
     apply_match,
     enrich_many,
     enrich_one,
@@ -234,7 +236,7 @@ def _apply_one(
         key = str(beatport_id)
         snap = cache.get(key)
         if snap is None:
-            return EnrichResult(path, "", "", status="error")
+            return EnrichResult(path, "", "", status=EnrichStatus.ERROR)
         best = catalog_api.CatalogTrack.from_cache(snap)
     cur = current_tags(path)
     result = apply_match(
@@ -247,8 +249,8 @@ def _apply_one(
     )
     # A refused write (verify failed, original untouched) must not be filed
     # under "matched", or the file silently never gets enriched.
-    if result.applied and result.applied.get("error"):
-        result.status = "verify-failed"
+    if result.applied and result.applied.error:
+        result.status = EnrichStatus.VERIFY_FAILED
     return result
 
 
@@ -264,7 +266,7 @@ class _Tally:
         progress_path: str,
         total: int,
         failure_limit: int,
-        progress_cb: Any | None = None,
+        progress_cb: Callable[[EnrichResult, int, int], None] | None = None,
     ) -> None:
         self.counts: Counter[str] = Counter()
         self.total = total
@@ -277,8 +279,8 @@ class _Tally:
 
     @staticmethod
     def _key(r: EnrichResult) -> str:
-        if r.status == "matched" and r.applied is not None:
-            changed = r.applied.get("updated") or r.applied.get("artwork_embedded")
+        if r.status == EnrichStatus.MATCHED and r.applied is not None:
+            changed = r.applied.updated or r.applied.artwork_embedded
             return "updated" if changed else "matched"
         return r.status
 
@@ -287,7 +289,11 @@ class _Tally:
         self.n_done += 1
         key = self._key(r)
         self.counts[key] += 1
-        if key in ("error", "verify-failed", "stuck"):
+        if key in (
+            EnrichStatus.ERROR,
+            EnrichStatus.VERIFY_FAILED,
+            EnrichStatus.STUCK,
+        ):
             self.streak += 1
             if self.streak >= self._failure_limit and not self.tripped:
                 self.tripped = True
@@ -303,7 +309,7 @@ class _Tally:
                 "path": r.path,
                 "status": r.status,
                 "beatport_id": r.beatport_id,
-                "applied": r.applied,
+                "applied": r.applied.to_dict() if r.applied is not None else None,
                 "source": r.source,
                 "snapshot": r.snapshot,
             },
@@ -384,7 +390,11 @@ def run(
         if apply_now or snapshot is not None:
             # Streaming: search the catalog for this file right now.
             found = enrich_one(token, path, dry_run=False, art_overwrite=art_overwrite)
-            return found if found is not None else EnrichResult(path, "", "", "skipped")
+            return (
+                found
+                if found is not None
+                else EnrichResult(path, "", "", EnrichStatus.SKIPPED)
+            )
         assert store is not None
         return _apply_one(
             path,

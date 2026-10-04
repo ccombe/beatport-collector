@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any, ClassVar, Protocol
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,46 @@ TEXT_FRAMES = (
     "label",
     "isrc",
 )
+
+
+# Promo/junk detectors — a value matching any of these counts as MISSING and
+# may be replaced with proper Beatport data (additive-only otherwise).
+# Lives here (not tagger) so adapters use it without a tagger import cycle.
+JUNK_DOMAINS = (
+    "myfreemp3.vip",
+    "electronicfresh.com",
+    "djsoundtop.com",
+    "myfreemp3",
+    "electronicfresh",
+    "djsoundtop",
+)
+URL_RE = re.compile(
+    r"(https?://|www\.|\b[\w-]+\.(com|vip|net|org|ru|to|info|biz)\b)", re.IGNORECASE
+)
+TRAILING_BPM_RE = re.compile(r"\s+\(?1\d\d\)?\s*$")  # ' (Original Mix) 128', ' 124'
+DOUBLED_MIX_RE = re.compile(r"(\(extended mix\)|\(original mix\))\s*\1", re.IGNORECASE)
+
+
+def is_junk_value(value: str) -> tuple[bool, str]:
+    """Check a tag value for promo junk. Returns (is_junk, reason)."""
+    if not value:
+        return False, ""
+    v = value.strip()
+    if URL_RE.search(v):
+        for d in JUNK_DOMAINS:
+            if d in v.lower():
+                return True, f"promo-domain:{d}"
+        return True, "url"
+    if TRAILING_BPM_RE.search(v):
+        return True, "trailing-bpm"
+    if DOUBLED_MIX_RE.search(v):
+        return True, "doubled-mix"
+    return False, ""
+
+
+def _keep_existing(existing: str, overwrite: bool) -> bool:
+    """True when an existing value survives: no overwrite and legit content."""
+    return bool(not overwrite and existing and not is_junk_value(existing)[0])
 
 
 class TagBackend(Protocol):
@@ -142,16 +183,12 @@ class ID3Backend:
     ) -> None:
         from mutagen.id3 import ID3, TXXX
 
-        from beatport_collector.tagger import is_junk_value
-
         classes = self._classes()
         tags = self._load(path) or ID3()
         for key, val in updates.items():
             fid, cls = self._MAP[key], classes[key]
-            if not overwrite:
-                existing = self._text(tags, fid)
-                if existing and not is_junk_value(existing)[0]:
-                    continue
+            if _keep_existing(self._text(tags, fid), overwrite):
+                continue
             tags.delall(fid)
             tags.add(cls(encoding=3, text=val))
         tags.delall(self._PROVENANCE)
@@ -270,18 +307,16 @@ class VorbisBackend:
     def write_updates(
         self, path: str, updates: dict[str, str], overwrite: bool
     ) -> None:
-        from beatport_collector.tagger import is_junk_value
-
         audio = self._load(path)
         if audio is None:
             raise OSError(f"unreadable file: {path}")
         for key, val in updates.items():
             field = self._MAP[key]
-            if not overwrite:
-                existing_vals = audio.get(field, [])
-                existing = str(existing_vals[0]) if existing_vals else ""
-                if existing and not is_junk_value(existing)[0]:
-                    continue
+            existing_vals = audio.get(field, [])
+            if _keep_existing(
+                str(existing_vals[0]) if existing_vals else "", overwrite
+            ):
+                continue
             audio[field] = [val]
         audio[self._PROVENANCE] = ["1"]
         audio.save(path)
@@ -383,8 +418,6 @@ class MP4Backend:
     def write_updates(
         self, path: str, updates: dict[str, str], overwrite: bool
     ) -> None:
-        from beatport_collector.tagger import is_junk_value
-
         audio = self._load(path)
         if audio is None:
             raise OSError(f"unreadable file: {path}")
@@ -398,17 +431,13 @@ class MP4Backend:
                     continue
             elif key in self._MAP:
                 atom = self._MAP[key]
-                if not overwrite and self._first(audio, atom):
-                    existing = self._first(audio, atom)
-                    if existing and not is_junk_value(existing)[0]:
-                        continue
+                if _keep_existing(self._first(audio, atom), overwrite):
+                    continue
                 audio[atom] = [val]
             else:
                 atom = self._FREEFORM[key]
-                if not overwrite:
-                    existing = self._first(audio, atom)
-                    if existing and not is_junk_value(existing)[0]:
-                        continue
+                if _keep_existing(self._first(audio, atom), overwrite):
+                    continue
                 audio[atom] = [val.encode("utf-8")]
         audio[self._PROVENANCE] = [b"1"]
         audio.save(path)

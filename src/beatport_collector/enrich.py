@@ -19,6 +19,7 @@ import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
 
 import requests
 
@@ -28,6 +29,7 @@ from beatport_collector.paths import (  # noqa: F401 - re-exported for callers/t
     wsl_to_windows,
 )
 from beatport_collector.pooling import run_pool
+from beatport_collector.tagger import TagReport
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +51,7 @@ def clean_query(title: str, artist: str = "") -> str:
     -> 'Eastern Storm (Original Mix)'; 'Josi Devil - Breathe Easy' with
     artist 'Josi Devil' -> 'Breathe Easy'.
     """
-    from beatport_collector.tagger import TRAILING_BPM_RE, URL_RE
+    from beatport_collector.backends import TRAILING_BPM_RE, URL_RE
 
     q = URL_RE.sub("", title).strip()
     q = TRAILING_BPM_RE.sub("", q).strip()
@@ -92,7 +94,7 @@ def guess_from_folder(path: str, title: str) -> tuple[str, str]:
     Returns (artist, title); ('', title) when the folder is itself junk
     (UnknownArtist, promo domains) and must not seed a search.
     """
-    from beatport_collector.tagger import URL_RE
+    from beatport_collector.backends import URL_RE
 
     parent = os.path.basename(os.path.dirname(path))
     if (
@@ -118,10 +120,6 @@ def guess_beatport_id(path: str) -> tuple[int, str]:
     return int(m.group(1)), remainder
 
 
-def file_needs_enrichment(path: str) -> tuple[bool, list[str]]:
-    return tagger.is_missing_key_tags(path)
-
-
 def _file_duration_ms(path: str) -> int | None:
     """Local audio duration in ms (used for duration-aware disambiguation)."""
     try:
@@ -135,16 +133,29 @@ def _file_duration_ms(path: str) -> int | None:
     return None
 
 
+class EnrichStatus(StrEnum):
+    """Every outcome a file can have. StrEnum: == "matched" still holds,
+    JSON serializes as the plain string, typos become type errors."""
+
+    MATCHED = "matched"
+    SKIPPED = "skipped"
+    ERROR = "error"
+    AMBIGUOUS = "ambiguous"
+    NO_CANDIDATES = "no-candidates"
+    STUCK = "stuck"
+    VERIFY_FAILED = "verify-failed"
+
+
 @dataclass
 class EnrichResult:
     path: str
     artist: str
     title: str
-    status: str  # matched / no-match / ambiguous / skipped / error
+    status: EnrichStatus  # matched / no-match / ambiguous / skipped / error
     beatport_id: int = 0
     beatport_date: str = ""
-    plan: dict | None = None
-    applied: dict | None = None
+    plan: TagReport | None = None
+    applied: TagReport | None = None
     source: str = "beatport"  # or "musicbrainz"
     snapshot: dict[str, object] | None = None  # cached track, avoids re-fetch
 
@@ -187,6 +198,14 @@ def _resolve_identity(path: str, cur: dict[str, str]) -> tuple[str, str] | None:
     return folder_artist, folder_title
 
 
+def _clean_artist(artist: str) -> str:
+    """Strip promo junk for SEARCH ONLY (mirrors clean_query title rules)."""
+    from beatport_collector.backends import TRAILING_BPM_RE, URL_RE
+
+    cleaned = TRAILING_BPM_RE.sub("", URL_RE.sub("", artist).strip()).strip()
+    return cleaned or artist
+
+
 def _search_candidates(
     token: str,
     artist: str,
@@ -195,26 +214,35 @@ def _search_candidates(
     mix: str,
     delay: float,
 ) -> list[catalog_api.CatalogTrack]:
-    """Search, then retry with the full title, then with roles swapped.
+    """Ordered search variants, first non-empty wins.
 
-    The swap covers files that carry the artist in the title and vice
-    versa. Duration gating downstream means a wrong guess cannot stick.
+    Exact, then full title, then swapped roles (files with artist/title
+    reversed — the swap fires even without a mix name, unlike before).
+    Each distinct query runs once; duration gating downstream means a
+    wrong guess cannot stick.
     """
-    cands = catalog_api.search_tracks(token, artist, base, mix_name=mix, delay=delay)
-    if cands or not mix:
-        return cands
-    cands = catalog_api.search_tracks(
-        token, artist, clean_query(title, artist), delay=delay
-    )
-    if cands or not title:
-        return cands
-    swap_base, swap_mix = split_mix(clean_query(title, artist))
-    return catalog_api.search_tracks(
-        token, swap_base, artist, mix_name=swap_mix, delay=delay
-    )
+    artist = _clean_artist(artist)
+    full = clean_query(title, artist)
+    swap_base, swap_mix = split_mix(full)
+    seen: set[tuple[str, str, str]] = set()
+    for search_artist, search_title, search_mix in (
+        (artist, base, mix),
+        (artist, full, ""),
+        (swap_base, artist, swap_mix),
+    ):
+        key = (search_artist, search_title, search_mix)
+        if key in seen:
+            continue
+        seen.add(key)
+        cands = catalog_api.search_tracks(
+            token, search_artist, search_title, mix_name=search_mix, delay=delay
+        )
+        if cands:
+            return cands
+    return []
 
 
-def _enrich_one(
+def enrich_one(
     token: str,
     raw_path: str,
     dry_run: bool = True,
@@ -223,6 +251,9 @@ def _enrich_one(
     delay: float = catalog_api.SEARCH_DELAY_SECONDS,
 ) -> EnrichResult | None:
     """Enrich a single file. None = nothing to do (not MP3 / complete tags).
+
+    The streaming unit of work: one call per file, so a caller can commit
+    each result as it lands instead of waiting for a whole phase.
 
     Pure per-file work (reads + at most 2 catalog searches + optional
     verified write) — safe to run in worker threads for distinct paths.
@@ -237,14 +268,17 @@ def _enrich_one(
 
     if not path.lower().endswith(AUDIO_EXTENSIONS) or not os.path.exists(path):
         return None
-    needs, _ = file_needs_enrichment(path)
+    needs, _ = tagger.is_missing_key_tags(path)
     if not needs:
         return None
     cur = tagger.current_tags(path)
     identity = _resolve_identity(path, cur)
     if identity is None:
         return EnrichResult(
-            path, cur.get("artist", ""), cur.get("title", ""), status="skipped"
+            path,
+            cur.get("artist", ""),
+            cur.get("title", ""),
+            status=EnrichStatus.SKIPPED,
         )
     artist, title = identity
     base, mix = split_mix(clean_query(title, artist))
@@ -261,7 +295,7 @@ def _enrich_one(
             best, reason = catalog_api.pick_best(cands, duration_ms=duration_ms)
     except (requests.RequestException, RuntimeError, ValueError, KeyError) as e:
         logger.warning("Search failed for %s - %s: %s", artist, title, e)
-        return EnrichResult(path, artist, title, status="error")
+        return EnrichResult(path, artist, title, status=EnrichStatus.ERROR)
     if not best:
         # Beatport came up empty — try MusicBrainz (release/date/label
         # only; never genre/BPM/key). Score + artist gates inside.
@@ -269,7 +303,7 @@ def _enrich_one(
 
         mb = musicbrainz.search_recording(artist, title, duration_ms=duration_ms)
         if mb is None or not (mb.release or mb.date or mb.label):
-            return EnrichResult(path, artist, title, status=reason)
+            return EnrichResult(path, artist, title, status=EnrichStatus(reason))
         mb_track = catalog_api.CatalogTrack(
             id=0,
             name=mb.title or title,
@@ -291,62 +325,20 @@ def _enrich_one(
         mb_result.snapshot = mb_track.to_cache()
         mb_result.beatport_date = mb.date
         return mb_result
-    bp_tags = best.to_tag_updates()
-    plan = tagger.plan_updates(
-        path,
-        bp_tags,
-        artwork_url=best.artwork_url,
-        overwrite=overwrite,
-        art_overwrite=art_overwrite,
-    )
-    if dry_run:
-        report = tagger.apply_plan(plan, dry_run=True)
-        return EnrichResult(
-            path,
-            artist,
-            title,
-            status="matched",
-            beatport_id=best.id,
-            beatport_date=best.publish_date,
-            plan=report,
-        )
-    applied = tagger.apply_plan(plan, dry_run=False)
-    result = EnrichResult(
+    result = apply_match(
         path,
         artist,
         title,
-        status="matched",
-        beatport_id=best.id,
-        beatport_date=best.publish_date,
-        plan=tagger.apply_plan(plan, dry_run=True),
-        applied=applied,
+        best,
+        dry_run=dry_run,
+        overwrite=overwrite,
+        art_overwrite=art_overwrite,
     )
-    if applied.get("error"):
+    if not dry_run and result.applied is not None and result.applied.error:
         # A refused write (verify failed, original untouched) must not be
         # filed under "matched", or the file silently never gets enriched.
-        result.status = "verify-failed"
+        result.status = EnrichStatus.VERIFY_FAILED
     return result
-
-
-def enrich_one(
-    token: str,
-    path: str,
-    dry_run: bool = True,
-    art_overwrite: bool = False,
-    delay: float = catalog_api.SEARCH_DELAY_SECONDS,
-) -> EnrichResult | None:
-    """Look up, match and (unless *dry_run*) write a single file.
-
-    The streaming unit of work: one call per file, so a caller can commit
-    each result as it lands instead of waiting for a whole phase.
-    """
-    return _enrich_one(
-        token,
-        path,
-        dry_run=dry_run,
-        art_overwrite=art_overwrite,
-        delay=delay,
-    )
 
 
 def enrich_files(
@@ -363,7 +355,7 @@ def enrich_files(
     for raw_path in paths:
         if len(results) >= limit:
             break
-        r = _enrich_one(
+        r = enrich_one(
             token,
             raw_path,
             dry_run=dry_run,
@@ -406,7 +398,7 @@ def enrich_many(
     out: list[EnrichResult] = []
 
     def _work(path: str) -> EnrichResult | None:
-        return _enrich_one(
+        return enrich_one(
             token,
             path,
             dry_run=dry_run,
@@ -418,7 +410,7 @@ def enrich_many(
     def _emit(path: str, result: EnrichResult | None, abandoned: bool) -> None:
         state["done"] += 1
         if abandoned:
-            result = EnrichResult(path, "", "", status="stuck")
+            result = EnrichResult(path, "", "", status=EnrichStatus.STUCK)
         if result is None:
             return
         out.append(result)
@@ -452,7 +444,7 @@ def apply_match(
             path,
             artist,
             title,
-            status="matched",
+            status=EnrichStatus.MATCHED,
             beatport_id=best.id,
             beatport_date=best.publish_date,
             plan=tagger.apply_plan(plan, dry_run=True),
@@ -461,7 +453,7 @@ def apply_match(
         path,
         artist,
         title,
-        status="matched",
+        status=EnrichStatus.MATCHED,
         beatport_id=best.id,
         beatport_date=best.publish_date,
         plan=tagger.apply_plan(plan, dry_run=True),

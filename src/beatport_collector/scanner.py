@@ -132,12 +132,6 @@ def clean_title(text: str) -> str:
     return normalize(text)
 
 
-def clean_title_condensed(text: str) -> str:
-    """Like :func:`clean_title` but also removes spaces between words."""
-    t = clean_title(text)
-    return t.replace(" ", "")
-
-
 # ── File scanning ────────────────────────────────────────────
 
 
@@ -234,6 +228,65 @@ def create_catalog_db(
 
     print(f"\n  Catalogued {count} files to {output_path}")
     return output_path
+
+
+def scan_sparse_manifest(
+    music_dir: str,
+    ext: str | None = None,
+    progress: Callable[[int, int], None] | None = None,
+) -> tuple[list[dict[str, object]], int]:
+    """Walk music_dir for files with missing/junk key tags.
+
+    Returns (sparse entries, total scanned). progress(sparse, total)
+    fires after each sparse entry so callers can report progress.
+    """
+    from beatport_collector import tagger
+    from beatport_collector.tagger import AUDIO_EXTENSIONS
+
+    exts = (
+        {f".{e.strip('.').lower()}" for e in ext.split(",")}
+        if ext
+        else set(AUDIO_EXTENSIONS)
+    )
+    sparse: list[dict[str, object]] = []
+    total = 0
+    for dirpath, _dirs, files in os.walk(music_dir):
+        for fn in files:
+            if os.path.splitext(fn)[1].lower() not in exts:
+                continue
+            total += 1
+            p = os.path.join(dirpath, fn)
+            cur = tagger.current_tags(p)
+            if not cur:
+                sparse.append({"path": p, "missing": ["unreadable"]})
+                continue
+            needs, missing = tagger.is_missing_key_tags(p)
+            if not needs:
+                continue
+            try:
+                audio = MutagenFile(p)
+                dur_ms = (
+                    int(float(audio.info.length) * 1000)
+                    if audio is not None and hasattr(audio.info, "length")
+                    else 0
+                )
+            except Exception:  # noqa: BLE001 - duration optional for manifest
+                dur_ms = 0
+            sparse.append(
+                {
+                    "path": p,
+                    "artist": cur.get("artist", ""),
+                    "title": cur.get("title", ""),
+                    "album": cur.get("album", ""),
+                    "genre": cur.get("genre", ""),
+                    "date": cur.get("date", ""),
+                    "duration_ms": dur_ms,
+                    "missing": missing,
+                }
+            )
+            if progress is not None:
+                progress(len(sparse), total)
+    return sparse, total
 
 
 # ── Matching ─────────────────────────────────────────────────
@@ -615,7 +668,7 @@ def scan(
     if extensions is None:
         extensions = DEFAULT_EXTENSIONS
 
-    with open(csv_path, encoding="utf-8") as f:
+    with open(csv_path, encoding="utf-8", newline="") as f:
         purchase_rows = list(csv.DictReader(f))
     logger.info("Loaded %d purchase rows from %s", len(purchase_rows), csv_path)
 

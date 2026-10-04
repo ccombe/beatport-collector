@@ -104,3 +104,92 @@ class TestCreatePlaylists:
 
         shutil.rmtree(out_dir, ignore_errors=True)
         os.remove(csv_path)
+
+    def test_carriage_return_in_title_survives(self) -> None:
+        """A bare \\r in a title must round-trip, not become \\n.
+
+        Regression: CSVs were read without newline="", so universal-newline
+        translation rewrote field-internal \\r on the way in.
+        """
+        import csv
+
+        csv_path = os.path.join(tempfile.gettempdir(), "test_cr_matched.csv")
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(
+                f, fieldnames=["Local File Path", "Title", "Artists", "Purchase Date"]
+            )
+            w.writeheader()
+            w.writerow(
+                {
+                    "Local File Path": "/music/a.mp3",
+                    "Title": "A\rb",
+                    "Artists": "X",
+                    "Purchase Date": "2025-03-25T03:11:29-06:00",
+                }
+            )
+
+        out_dir = tempfile.mkdtemp()
+        result = create_playlists(csv_path, output_dir=out_dir)
+        with open(result["2025-03"], encoding="utf-8", newline="") as f:
+            assert "A\rb" in f.read()
+
+        import shutil
+
+        shutil.rmtree(out_dir, ignore_errors=True)
+        os.remove(csv_path)
+
+    def test_rekordbox_xml(self) -> None:
+        """rekordbox_xml=True writes a parseable library with tracks + nodes."""
+        import csv
+        import xml.etree.ElementTree as ET
+
+        csv_path = os.path.join(tempfile.gettempdir(), "test_rb_matched.csv")
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(
+                f,
+                fieldnames=[
+                    "Local File Path",
+                    "Title",
+                    "Artists",
+                    "Release Title",
+                    "Purchase Date",
+                ],
+            )
+            w.writeheader()
+            w.writerow(
+                {
+                    "Local File Path": "/music/a.mp3",
+                    "Title": "Track A",
+                    "Artists": "Artist A",
+                    "Release Title": "Album A",
+                    "Purchase Date": "2025-03-25T03:11:29-06:00",
+                }
+            )
+            w.writerow(
+                {
+                    "Local File Path": "/music/b.mp3",
+                    "Title": "Track B",
+                    "Artists": "Artist B",
+                    "Release Title": "Album B",
+                    "Purchase Date": "2025-04-01T12:00:00-06:00",
+                }
+            )
+
+        out_dir = tempfile.mkdtemp()
+        result = create_playlists(csv_path, output_dir=out_dir, rekordbox_xml=True)
+        root = ET.parse(result["rekordbox_playlists.xml"]).getroot()
+        assert root.tag == "DJ_PLAYLISTS"
+        collection = root.find("COLLECTION")
+        assert collection is not None
+        tracks = collection.findall("TRACK")
+        assert [t.get("Name") for t in tracks] == ["Track A", "Track B"]
+        assert tracks[0].get("Artist") == "Artist A"
+        names = [n.get("Name") for n in root.iter("NODE")]
+        assert "2025" in names
+        assert "2025-03" in names
+        assert "2025-04" in names
+
+        import shutil
+
+        shutil.rmtree(out_dir, ignore_errors=True)
+        os.remove(csv_path)
