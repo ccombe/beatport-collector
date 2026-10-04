@@ -123,16 +123,13 @@ class Track:
     mix_name: str = ""
 
     @classmethod
+    def _nested(cls, data: dict[str, Any], key: str, factory) -> Any | None:
+        return factory(data[key]) if data.get(key) else None
+
+    @classmethod
     def from_downloads_api(cls, data: dict[str, Any]) -> Track:
         artists = [Artist.from_dict(a) for a in data.get("artists", [])]
         remixers = [Artist.from_dict(r) for r in data.get("remixers", [])]
-        genre = Genre.from_dict(data["genre"]) if data.get("genre") else None
-        sub_genre = (
-            Genre.from_dict(data["sub_genre"]) if data.get("sub_genre") else None
-        )
-        label = Label.from_dict(data["label"]) if data.get("label") else None
-        release = Release.from_dict(data["release"]) if data.get("release") else None
-        key = Key.from_dict(data["key"]) if data.get("key") else None
         price = (
             Price.from_dict(data["price"])
             if isinstance(data.get("price"), dict)
@@ -144,11 +141,11 @@ class Track:
             name=data.get("name", "") or "",
             artists=artists,
             remixers=remixers,
-            genre=genre,
-            sub_genre=sub_genre,
-            label=label,
-            release=release,
-            key=key,
+            genre=cls._nested(data, "genre", Genre.from_dict),
+            sub_genre=cls._nested(data, "sub_genre", Genre.from_dict),
+            label=cls._nested(data, "label", Label.from_dict),
+            release=cls._nested(data, "release", Release.from_dict),
+            key=cls._nested(data, "key", Key.from_dict),
             price=price,
             bpm=data.get("bpm", 0) or 0,
             isrc=data.get("isrc", "") or "",

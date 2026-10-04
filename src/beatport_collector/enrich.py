@@ -24,7 +24,7 @@ from enum import StrEnum
 import requests
 
 from beatport_collector import catalog_api, tagger
-from beatport_collector.paths import (  # noqa: F401 - re-exported for callers/tests
+from beatport_collector.paths import (  # noqa: F401
     windows_to_wsl,
     wsl_to_windows,
 )
@@ -128,7 +128,7 @@ def _file_duration_ms(path: str) -> int | None:
         audio = MutagenFile(path)
         if audio is not None and hasattr(audio.info, "length"):
             return int(float(audio.info.length) * 1000)
-    except Exception:  # noqa: BLE001 - unreadable files simply skip duration matching
+    except Exception:  # noqa: BLE001
         logger.debug("No duration for %s", path)
     return None
 
@@ -242,6 +242,45 @@ def _search_candidates(
     return []
 
 
+def _apply_musicbrainz(
+    path: str,
+    artist: str,
+    title: str,
+    duration_ms: int | None,
+    reason: str,
+    *,
+    dry_run: bool,
+    overwrite: bool,
+    art_overwrite: bool,
+) -> EnrichResult:
+    from beatport_collector import musicbrainz
+
+    mb = musicbrainz.search_recording(artist, title, duration_ms=duration_ms)
+    if mb is None or not (mb.release or mb.date or mb.label):
+        return EnrichResult(path, artist, title, status=EnrichStatus(reason))
+    mb_track = catalog_api.CatalogTrack(
+        id=0,
+        name=mb.title or title,
+        artists=mb.artist or artist,
+        release_name=mb.release,
+        publish_date=mb.date,
+        label=mb.label,
+    )
+    mb_result = apply_match(
+        path,
+        artist,
+        title,
+        mb_track,
+        dry_run=dry_run,
+        overwrite=overwrite,
+        art_overwrite=art_overwrite,
+    )
+    mb_result.source = "musicbrainz"
+    mb_result.snapshot = mb_track.to_cache()
+    mb_result.beatport_date = mb.date
+    return mb_result
+
+
 def enrich_one(
     token: str,
     raw_path: str,
@@ -299,32 +338,16 @@ def enrich_one(
     if not best:
         # Beatport came up empty — try MusicBrainz (release/date/label
         # only; never genre/BPM/key). Score + artist gates inside.
-        from beatport_collector import musicbrainz
-
-        mb = musicbrainz.search_recording(artist, title, duration_ms=duration_ms)
-        if mb is None or not (mb.release or mb.date or mb.label):
-            return EnrichResult(path, artist, title, status=EnrichStatus(reason))
-        mb_track = catalog_api.CatalogTrack(
-            id=0,
-            name=mb.title or title,
-            artists=mb.artist or artist,
-            release_name=mb.release,
-            publish_date=mb.date,
-            label=mb.label,
-        )
-        mb_result = apply_match(
+        return _apply_musicbrainz(
             path,
             artist,
             title,
-            mb_track,
+            duration_ms,
+            reason,
             dry_run=dry_run,
             overwrite=overwrite,
             art_overwrite=art_overwrite,
         )
-        mb_result.source = "musicbrainz"
-        mb_result.snapshot = mb_track.to_cache()
-        mb_result.beatport_date = mb.date
-        return mb_result
     result = apply_match(
         path,
         artist,

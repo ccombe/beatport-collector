@@ -172,7 +172,7 @@ def read_file_tags(filepath: str) -> dict[str, Any]:
             tags["duration"] = audio.info.length
 
         return tags
-    except Exception as e:  # noqa: BLE001 - corrupt files must not crash a library scan
+    except Exception as e:  # noqa: BLE001
         logger.debug("Could not read tags from %s: %s", filepath, e)
         return {}
 
@@ -230,6 +230,37 @@ def create_catalog_db(
     return output_path
 
 
+def _sparse_entry(p: str) -> dict[str, object] | None:
+    """Manifest entry for one file, or None when its tags are complete."""
+    from beatport_collector import tagger
+
+    cur = tagger.current_tags(p)
+    if not cur:
+        return {"path": p, "missing": ["unreadable"]}
+    needs, missing = tagger.is_missing_key_tags(p)
+    if not needs:
+        return None
+    try:
+        audio = MutagenFile(p)
+        dur_ms = (
+            int(float(audio.info.length) * 1000)
+            if audio is not None and hasattr(audio.info, "length")
+            else 0
+        )
+    except Exception:  # noqa: BLE001
+        dur_ms = 0
+    return {
+        "path": p,
+        "artist": cur.get("artist", ""),
+        "title": cur.get("title", ""),
+        "album": cur.get("album", ""),
+        "genre": cur.get("genre", ""),
+        "date": cur.get("date", ""),
+        "duration_ms": dur_ms,
+        "missing": missing,
+    }
+
+
 def scan_sparse_manifest(
     music_dir: str,
     ext: str | None = None,
@@ -240,7 +271,6 @@ def scan_sparse_manifest(
     Returns (sparse entries, total scanned). progress(sparse, total)
     fires after each sparse entry so callers can report progress.
     """
-    from beatport_collector import tagger
     from beatport_collector.tagger import AUDIO_EXTENSIONS
 
     exts = (
@@ -255,35 +285,10 @@ def scan_sparse_manifest(
             if os.path.splitext(fn)[1].lower() not in exts:
                 continue
             total += 1
-            p = os.path.join(dirpath, fn)
-            cur = tagger.current_tags(p)
-            if not cur:
-                sparse.append({"path": p, "missing": ["unreadable"]})
+            entry = _sparse_entry(os.path.join(dirpath, fn))
+            if entry is None:
                 continue
-            needs, missing = tagger.is_missing_key_tags(p)
-            if not needs:
-                continue
-            try:
-                audio = MutagenFile(p)
-                dur_ms = (
-                    int(float(audio.info.length) * 1000)
-                    if audio is not None and hasattr(audio.info, "length")
-                    else 0
-                )
-            except Exception:  # noqa: BLE001 - duration optional for manifest
-                dur_ms = 0
-            sparse.append(
-                {
-                    "path": p,
-                    "artist": cur.get("artist", ""),
-                    "title": cur.get("title", ""),
-                    "album": cur.get("album", ""),
-                    "genre": cur.get("genre", ""),
-                    "date": cur.get("date", ""),
-                    "duration_ms": dur_ms,
-                    "missing": missing,
-                }
-            )
+            sparse.append(entry)
             if progress is not None:
                 progress(len(sparse), total)
     return sparse, total

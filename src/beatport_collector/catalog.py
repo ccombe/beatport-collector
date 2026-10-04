@@ -22,6 +22,12 @@ from beatport_collector.scanner import (
 
 logger = logging.getLogger(__name__)
 
+_ALBUM_SUBSTRING_QUERY = (
+    "SELECT file_path, artist, clean_title FROM tracks WHERE "
+    "(normalized_album = ? OR ? LIKE '%' || normalized_album || '%' "
+    "OR normalized_album LIKE '%' || ? || '%')"
+)
+
 
 class Catalog:
     """Persistent SQLite catalog of music files with matching support.
@@ -292,9 +298,7 @@ class Catalog:
         if not q.has_fuzzy_keys:
             return None
         return self._first_overlapping(
-            "SELECT file_path, artist, clean_title FROM tracks WHERE "
-            "(normalized_album = ? OR ? LIKE '%' || normalized_album || '%' "
-            "OR normalized_album LIKE '%' || ? || '%')",
+            _ALBUM_SUBSTRING_QUERY,
             self._album_args(q),
             q,
             extra=lambda r: (
@@ -308,9 +312,7 @@ class Catalog:
             return None
         threshold = max(2, len(q.clean) // 5)
         return self._first_overlapping(
-            "SELECT file_path, artist, clean_title FROM tracks WHERE "
-            "(normalized_album = ? OR ? LIKE '%' || normalized_album || '%' "
-            "OR normalized_album LIKE '%' || ? || '%')",
+            _ALBUM_SUBSTRING_QUERY,
             self._album_args(q),
             q,
             extra=lambda r: (
@@ -324,9 +326,7 @@ class Catalog:
         if not q.has_fuzzy_keys:
             return None
         return self._first_overlapping(
-            "SELECT file_path, artist, clean_title FROM tracks WHERE "
-            "(normalized_album = ? OR ? LIKE '%' || normalized_album || '%' "
-            "OR normalized_album LIKE '%' || ? || '%')",
+            _ALBUM_SUBSTRING_QUERY,
             self._album_args(q),
             q,
             extra=lambda r: (

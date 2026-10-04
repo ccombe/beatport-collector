@@ -18,7 +18,7 @@ def _parse_purchase_date(raw: str) -> datetime | None:
         return None
     for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
         try:
-            return datetime.strptime(raw.strip(), fmt)  # noqa: DTZ007 - legacy CSV dates are naive by design
+            return datetime.strptime(raw.strip(), fmt)  # noqa: DTZ007
         except ValueError:
             continue
     return None

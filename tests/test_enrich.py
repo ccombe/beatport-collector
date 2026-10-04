@@ -182,7 +182,8 @@ def _make_mp3_copy(tmp_path, src: str) -> str:
 class TestJunkDetection:
     def test_promo_domain(self) -> None:
         junk, reason = tagger.is_junk_value("Haze myfreemp3.vip")
-        assert junk and "myfreemp3" in reason
+        assert junk
+        assert "myfreemp3" in reason
 
     def test_electronicfresh_url(self) -> None:
         junk, _ = tagger.is_junk_value(
@@ -192,11 +193,13 @@ class TestJunkDetection:
 
     def test_trailing_bpm(self) -> None:
         junk, reason = tagger.is_junk_value("Eastern Storm (Original Mix) 128")
-        assert junk and reason == "trailing-bpm"
+        assert junk
+        assert reason == "trailing-bpm"
 
     def test_doubled_mix(self) -> None:
         junk, reason = tagger.is_junk_value("Crown (Extended Mix) (Extended Mix)")
-        assert junk and reason == "doubled-mix"
+        assert junk
+        assert reason == "doubled-mix"
 
     def test_legit_kept(self) -> None:
         assert tagger.is_junk_value("Mover (Extended Mix)") == (False, "")

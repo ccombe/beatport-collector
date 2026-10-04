@@ -60,13 +60,17 @@ def test_parse_artists_yields_clean_parts(s: str) -> None:
 @given(nasty_text, nasty_text)
 def test_filename_guesses_never_crash(path: str, title: str) -> None:
     artist, guessed = enrich.guess_from_filename(path)
-    assert isinstance(artist, str) and isinstance(guessed, str)
+    assert isinstance(artist, str)
+    assert isinstance(guessed, str)
     artist2, title2 = enrich.guess_from_folder(path, title)
-    assert isinstance(artist2, str) and isinstance(title2, str)
+    assert isinstance(artist2, str)
+    assert isinstance(title2, str)
     tid, rest = enrich.guess_beatport_id(path)
-    assert isinstance(tid, int) and isinstance(rest, str)
+    assert isinstance(tid, int)
+    assert isinstance(rest, str)
     base, mix = enrich.split_mix(title)
-    assert isinstance(base, str) and isinstance(mix, str)
+    assert isinstance(base, str)
+    assert isinstance(mix, str)
     assert isinstance(enrich.clean_query(title, artist), str)
     assert isinstance(enrich.windows_to_wsl(path), str)
     assert isinstance(enrich.wsl_to_windows(path), str)
@@ -74,7 +78,8 @@ def test_filename_guesses_never_crash(path: str, title: str) -> None:
         _parse_purchase_date(path), "year"
     )
     junk, reason = tagger.is_junk_value(path)
-    assert isinstance(junk, bool) and isinstance(reason, str)
+    assert isinstance(junk, bool)
+    assert isinstance(reason, str)
 
 
 def _api_artist() -> st.SearchStrategy[dict]:

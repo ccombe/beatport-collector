@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable, Iterable
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,42 @@ def _defer_rest(pending: dict, started: dict[int, float]) -> None:
         )
     pending.clear()
     started.clear()
+
+
+def _reap_item[T, R](
+    fut: Future[R],
+    pending: dict[Future[R], T],
+    started: dict[int, float],
+    on_done: OnDone[T, R],
+    describe: Callable[[T], str],
+) -> None:
+    item = pending.pop(fut)
+    started.pop(id(item), None)
+    try:
+        result: R | None = fut.result()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Worker failed for %s: %s", describe(item), e)
+        on_done(item, None, False)
+    else:
+        on_done(item, result, False)
+
+
+def _abandon_overdue[T, R](
+    pending: dict[Future[R], T],
+    started: dict[int, float],
+    now: float,
+    stuck_after: float,
+    on_done: OnDone[T, R],
+    describe: Callable[[T], str],
+) -> None:
+    for fut, item in list(pending.items()):
+        birth = started.get(id(item))
+        if birth is None or now - birth <= stuck_after:
+            continue
+        logger.warning("Abandoning after %.0fs: %s", now - birth, describe(item))
+        pending.pop(fut)
+        started.pop(id(item), None)
+        on_done(item, None, True)
 
 
 def run_pool[T, R](
@@ -90,30 +126,13 @@ def run_pool[T, R](
             finished, _ = wait(set(pending), timeout=poll, return_when=FIRST_COMPLETED)
             now = time.monotonic()
             for fut in finished:
-                item = pending.pop(fut)
-                started.pop(id(item), None)
-                try:
-                    result: R | None = fut.result()
-                except Exception as e:  # noqa: BLE001 - one bad item must not kill the batch
-                    logger.warning("Worker failed for %s: %s", describe(item), e)
-                    on_done(item, None, False)
-                else:
-                    on_done(item, result, False)
+                _reap_item(fut, pending, started, on_done, describe)
                 # Check after every reap: a fast worker can finish the whole
                 # batch between sweeps, and the breaker must still bite.
                 if stop_when is not None and stop_when():
                     _defer_rest(pending, started)
                     return
-            for fut, item in list(pending.items()):
-                birth = started.get(id(item))
-                if birth is None or now - birth <= stuck_after:
-                    continue
-                logger.warning(
-                    "Abandoning after %.0fs: %s", now - birth, describe(item)
-                )
-                pending.pop(fut)
-                started.pop(id(item), None)
-                on_done(item, None, True)
+            _abandon_overdue(pending, started, now, stuck_after, on_done, describe)
             if stop_when is not None and stop_when():
                 _defer_rest(pending, started)
                 return
@@ -121,4 +140,3 @@ def run_pool[T, R](
 
 def nothing[T, R](item: T, result: R | None, abandoned: bool) -> None:
     """No-op ``on_done``, for callers that only want the side effects."""
-    return

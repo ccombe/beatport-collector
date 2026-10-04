@@ -129,14 +129,14 @@ def _restore_dropped_frames(
         return []
     try:
         post_ids, _ = adapter.post_ids(path)
-    except Exception:  # noqa: BLE001 - let the normal verify report it
+    except Exception:  # noqa: BLE001
         return []
     dropped = sorted(pre_ids - post_ids)
     if not dropped:
         return []
     try:
         adapter.restore_frames(path, dropped)
-    except Exception as e:  # noqa: BLE001 - verify will refuse; nothing lost yet
+    except Exception as e:  # noqa: BLE001
         logger.warning("Could not restore dropped frames in %s: %s", path, e)
         return []
     logger.info("Restored %d dropped frame(s) in %s: %s", len(dropped), path, dropped)
@@ -265,7 +265,7 @@ def _audio_length(path: str) -> float | None:
         if info is None:
             return None
         return float(info.length)
-    except Exception:  # noqa: BLE001 - corrupt files report None, handled by callers
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -276,7 +276,7 @@ def current_tags(path: str) -> dict[str, str]:
         return {}
     try:
         return adapter.read_tags(path)
-    except Exception:  # noqa: BLE001 - unreadable files read as empty
+    except Exception:  # noqa: BLE001
         logger.warning("Cannot read tags from %s", path)
         return {}
 
@@ -297,6 +297,19 @@ def is_missing_key_tags(path: str) -> tuple[bool, list[str]]:
     return bool(missing), missing
 
 
+def _plan_key(
+    cur: dict[str, str], key: str, new_val: str, overwrite: bool
+) -> tuple[str | None, str | None]:
+    """New value + junk reason for one frame, or (None, None) to keep."""
+    if key not in TEXT_FRAMES or not new_val:
+        return None, None
+    existing = cur.get(key, "")
+    junk, reason = is_junk_value(existing)
+    if (not existing or junk or overwrite) and existing != new_val:
+        return new_val, reason if junk else None
+    return None, None
+
+
 def plan_updates(
     path: str,
     beatport: dict[str, str],
@@ -315,19 +328,17 @@ def plan_updates(
     adapter = _backend(path)
     try:
         has_art = bool(adapter and adapter.has_artwork(path))
-    except Exception:  # noqa: BLE001 - unreadable files count as artless
+    except Exception:  # noqa: BLE001
         has_art = False
     updates: dict[str, str] = {}
     junk_replaced: dict[str, str] = {}
     for key, new_val in beatport.items():
-        if key not in TEXT_FRAMES or not new_val:
-            continue
-        existing = cur.get(key, "")
-        junk, reason = is_junk_value(existing)
-        if (not existing or junk or overwrite) and existing != new_val:
-            updates[key] = new_val
-            if junk:
-                junk_replaced[key] = reason
+        updated, junk_reason = _plan_key(cur, key, new_val, overwrite)
+        if updated is not None:
+            updates[key] = updated
+        if junk_reason is not None:
+            junk_replaced[key] = junk_reason
+    will_art = bool(artwork_url) and (art_overwrite or not has_art)
     will_art = bool(artwork_url) and (art_overwrite or not has_art)
     plan = TagPlan(
         path=path,
@@ -350,37 +361,14 @@ def _fetch_artwork(url: str, timeout: int = 30) -> tuple[bytes, str] | None:
     return fetch_artwork(url, timeout=timeout)
 
 
-def apply_plan(plan: TagPlan, dry_run: bool = True, v2_version: int = 3) -> TagReport:
-    """Apply a TagPlan. dry_run=True writes nothing.
+def _stage_temp(
+    plan: TagPlan,
+) -> tuple[str, TagBackend, set[str], int, bool] | TagReport:
+    """Copy to temp, write tags, restore frames, embed art.
 
-    Real writes are atomic-with-verify and leave no backup files behind:
-      1. copy the original to a temp file in the same directory
-         (same filesystem, so the final replace is atomic)
-      2. write all tag updates to the temp copy only
-      3. verify the temp copy: every planned frame reads back, every
-         pre-existing frame ID still present, audio length unchanged
-      4. only then ``os.replace()`` the temp over the original
-
-    If verification fails the temp copy is deleted and the original is
-    never touched. Returns a TagReport.
+    Returns (tmp_path, adapter, pre_ids, pre_pics, art_ok) — or a
+    TagReport when staging itself aborts (original untouched).
     """
-    if dry_run:
-        return TagReport(
-            path=plan.path,
-            dry_run=True,
-            updates=dict(plan.updates),
-            artwork=plan.artwork_url if plan.will_embed_artwork else "",
-        )
-    if not plan.updates and not plan.will_embed_artwork:
-        return TagReport(path=plan.path, updated=[], note="nothing to do")
-
-    if _backend(plan.path) is None or not os.path.exists(plan.path):
-        return TagReport(
-            path=plan.path, error=f"not a supported audio file {AUDIO_EXTENSIONS}"
-        )
-
-    orig_len = _audio_length(plan.path)
-
     # 1. Work on a temp copy; the original stays untouched until verified.
     tmp_fd, tmp_path = tempfile.mkstemp(
         prefix=".enrich-",
@@ -390,7 +378,7 @@ def apply_plan(plan: TagPlan, dry_run: bool = True, v2_version: int = 3) -> TagR
     os.close(tmp_fd)
     try:
         shutil.copyfile(plan.path, tmp_path)
-    except Exception as e:  # noqa: BLE001 - copy failure must abort loudly, never silently
+    except Exception as e:  # noqa: BLE001
         leftover = _silent_unlink(tmp_path)
         return _abort(plan.path, f"temp copy failed, aborting: {e}", tmp_path, leftover)
 
@@ -400,12 +388,12 @@ def apply_plan(plan: TagPlan, dry_run: bool = True, v2_version: int = 3) -> TagR
         return _abort(plan.path, "unsupported container", tmp_path, leftover)
     try:
         pre_ids, pre_pics = adapter.post_ids(tmp_path)
-    except Exception:  # noqa: BLE001 - unreadable temp aborts before touching original
+    except Exception:  # noqa: BLE001
         leftover = _silent_unlink(tmp_path)
         return _abort(plan.path, "load failed: unreadable file", tmp_path, leftover)
     try:
         adapter.write_updates(tmp_path, dict(plan.updates), plan.overwrite)
-    except Exception as e:  # noqa: BLE001 - write failure must not touch original
+    except Exception as e:  # noqa: BLE001
         leftover = _silent_unlink(tmp_path)
         return _abort(plan.path, f"tag write failed: {e}", tmp_path, leftover)
 
@@ -425,10 +413,22 @@ def apply_plan(plan: TagPlan, dry_run: bool = True, v2_version: int = 3) -> TagR
                 art_ok = adapter.write_artwork(
                     tmp_path, data, mime, replace=plan.art_overwrite
                 )
-            except Exception as e:  # noqa: BLE001 - art failure keeps tags, never the original
+            except Exception as e:  # noqa: BLE001
                 logger.warning("Artwork embed failed for %s: %s", tmp_path, e)
                 art_ok = False
+    return tmp_path, adapter, pre_ids, pre_pics, art_ok
 
+
+def _commit_verified(
+    plan: TagPlan,
+    tmp_path: str,
+    adapter: TagBackend,
+    pre_ids: set[str],
+    pre_pics: int,
+    orig_len: float | None,
+    art_ok: bool,
+) -> TagReport:
+    """Verify the temp copy, then atomically replace the original."""
     # 3. Verify the temp copy before it goes anywhere near the original.
     check = _verify_temp(adapter, plan, tmp_path, pre_ids, pre_pics, orig_len)
     if not check.ok:
@@ -473,4 +473,37 @@ def apply_plan(plan: TagPlan, dry_run: bool = True, v2_version: int = 3) -> TagR
         updated=sorted(plan.updates.keys()),
         artwork_embedded=art_ok,
         verified=True,
+    )
+
+
+def apply_plan(plan: TagPlan, dry_run: bool = True) -> TagReport:
+    """Apply a TagPlan. dry_run=True writes nothing.
+
+    Real writes are atomic-with-verify and leave no backup files behind:
+    staged to a temp copy, verified, then moved over the original.
+    If verification fails the temp copy is deleted and the original is
+    never touched. Returns a TagReport.
+    """
+    if dry_run:
+        return TagReport(
+            path=plan.path,
+            dry_run=True,
+            updates=dict(plan.updates),
+            artwork=plan.artwork_url if plan.will_embed_artwork else "",
+        )
+    if not plan.updates and not plan.will_embed_artwork:
+        return TagReport(path=plan.path, updated=[], note="nothing to do")
+
+    if _backend(plan.path) is None or not os.path.exists(plan.path):
+        return TagReport(
+            path=plan.path, error=f"not a supported audio file {AUDIO_EXTENSIONS}"
+        )
+
+    orig_len = _audio_length(plan.path)
+    staged = _stage_temp(plan)
+    if isinstance(staged, TagReport):
+        return staged
+    tmp_path, adapter, pre_ids, pre_pics, art_ok = staged
+    return _commit_verified(
+        plan, tmp_path, adapter, pre_ids, pre_pics, orig_len, art_ok
     )

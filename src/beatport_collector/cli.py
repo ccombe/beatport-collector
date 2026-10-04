@@ -8,6 +8,7 @@ import getpass
 import logging
 import os
 import sys
+from collections import Counter
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -34,6 +35,9 @@ from beatport_collector.session import oauth_login
 from beatport_collector.types import CSV_FIELDS, track_to_row
 
 logger = logging.getLogger(__name__)
+
+MUSIC_DIR_HELP = "Directory containing music files"
+ART_OVERWRITE_HELP = "Also replace existing cover art"
 
 
 def _progress_callback(page: int, total: int, count: int) -> None:
@@ -230,25 +234,43 @@ def _safe_print(msg: str) -> None:
         print(msg.encode("ascii", "replace").decode("ascii"), flush=True)
 
 
+_VU = "▁▂▃▄▅▆▇█"
+_SPIN = ["◐", "◑", "◒", "◓"]
+
+
+def _bar(n: int, total: int, width: int = 28) -> str:
+    filled = int(width * n / max(total, 1))
+    return f"[{'█' * filled}{'░' * (width - filled)}]"
+
+
+def _progress_line(
+    n: int, t: int, el: float, counts: Counter[str], updated: int
+) -> str:
+    rate = n / max(el, 1)
+    eta = (t - n) / max(rate, 0.01)
+    pct = 100 * n / max(t, 1)
+    vu = _VU[min(int(pct / 100 * (len(_VU) - 1)), len(_VU) - 1)]
+    glyph = _SPIN[(n // 10) % len(_SPIN)]
+    return (
+        f"  {glyph} ♪ {_bar(n, t)} {n}/{t} ({pct:.0f}%) {vu} "
+        f"updated={updated} matched={counts['matched']} "
+        f"ambig={counts['ambiguous']} nomatch={counts['no-candidates']} "
+        f"skip={counts['skipped']} err={counts['error']} "
+        f"| {el / 60:.0f}m in ~{eta / 60:.0f}m left"
+    )
+
+
 def _progress_printer(
-    t0: float, total: int
+    t0: float,
 ) -> tuple[Callable[[EnrichResult, int, int], None], dict[str, Any]]:
     """DJ-booth progress view: bar, VU, spinner, now-spinning line.
 
     Returns (callback, state) where state tracks updated/last counts.
     """
     import time
-    from collections import Counter
 
     counts: Counter[str] = Counter()
     state: dict[str, Any] = {"updated": 0, "last_spin": ""}
-
-    VU = "▁▂▃▄▅▆▇█"
-    spin = ["◐", "◑", "◒", "◓"]
-
-    def bar(n: int, total: int, width: int = 28) -> str:
-        filled = int(width * n / max(total, 1))
-        return f"[{'█' * filled}{'░' * (width - filled)}]"
 
     def cb(r: EnrichResult, n: int, t: int) -> None:
         counts[r.status] += 1
@@ -262,18 +284,7 @@ def _progress_printer(
             state["last_spin"] = f"{r.artist} - {r.title}"
         if n % 10 == 0 or n == t:
             el = time.monotonic() - t0
-            rate = n / max(el, 1)
-            eta = (t - n) / max(rate, 0.01)
-            pct = 100 * n / max(t, 1)
-            vu = VU[min(int(pct / 100 * (len(VU) - 1)), len(VU) - 1)]
-            glyph = spin[(n // 10) % len(spin)]
-            _safe_print(
-                f"  {glyph} ♪ {bar(n, t)} {n}/{t} ({pct:.0f}%) {vu} "
-                f"updated={state['updated']} matched={counts['matched']} "
-                f"ambig={counts['ambiguous']} nomatch={counts['no-candidates']} "
-                f"skip={counts['skipped']} err={counts['error']} "
-                f"| {el / 60:.0f}m in ~{eta / 60:.0f}m left"
-            )
+            _safe_print(_progress_line(n, t, el, counts, int(state["updated"])))
             if state["last_spin"]:
                 last = state["last_spin"]
                 assert isinstance(last, str)
@@ -327,7 +338,7 @@ def _catalog_parser(sub):
         "catalog",
         help="Scan music dir and create a SQLite catalog DB of all files + ID3 tags",
     )
-    p.add_argument("music_dir", help="Directory containing music files")
+    p.add_argument("music_dir", help=MUSIC_DIR_HELP)
     p.add_argument(
         "--ext",
         default=None,
@@ -342,7 +353,7 @@ def _scan_tags_parser(sub):
         "scan-tags",
         help="Walk a music dir and write sparse-tag manifest JSON (missing/junk tags)",
     )
-    p.add_argument("music_dir", help="Directory containing music files")
+    p.add_argument("music_dir", help=MUSIC_DIR_HELP)
     p.add_argument("--output", required=True, help="Output manifest JSON path")
     p.add_argument(
         "--ext",
@@ -354,7 +365,7 @@ def _scan_tags_parser(sub):
 
 def _scan_parser(sub):
     p = sub.add_parser("scan", help="Scan music dir and match files to purchase CSV")
-    p.add_argument("music_dir", help="Directory containing music files")
+    p.add_argument("music_dir", help=MUSIC_DIR_HELP)
     p.add_argument("--csv", required=True, help="Path to purchase CSV")
     p.add_argument(
         "--catalog",
@@ -425,7 +436,7 @@ def _enrich_parser(sub):
     p.add_argument(
         "--art-overwrite",
         action="store_true",
-        help="Also replace existing cover art",
+        help=ART_OVERWRITE_HELP,
     )
     p.add_argument(
         "--delay",
@@ -480,7 +491,7 @@ def _batch_parser(sub):
     p.add_argument(
         "--art-overwrite",
         action="store_true",
-        help="Also replace existing cover art",
+        help=ART_OVERWRITE_HELP,
     )
     p.add_argument(
         "--delay",
@@ -520,7 +531,7 @@ def _apply_parser(sub):
     p.add_argument(
         "--art-overwrite",
         action="store_true",
-        help="Also replace existing cover art",
+        help=ART_OVERWRITE_HELP,
     )
     p.add_argument(
         "--delay",
@@ -655,7 +666,7 @@ def handle_batch(args: argparse.Namespace) -> None:
     token = _get_token(args)
     total = len(manifest)
     t0 = time.monotonic()
-    cb, state = _progress_printer(t0, total)
+    cb, state = _progress_printer(t0)
     counts = run(
         manifest,
         token,
@@ -693,7 +704,7 @@ def handle_apply(args: argparse.Namespace) -> None:
     token = _get_token(args)
     total = len(manifest)
     t0 = time.monotonic()
-    cb, state = _progress_printer(t0, total)
+    cb, state = _progress_printer(t0)
     counts = run(
         manifest,
         token,

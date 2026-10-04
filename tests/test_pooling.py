@@ -158,7 +158,8 @@ def test_results_stream_instead_of_arriving_at_the_end():
     # 8 x 0.3s over 2 workers drains in ~1.2s; streaming reports at ~0.3s.
     run_pool(range(8), slow, on_done, workers=2)
     total = time.monotonic() - start
-    assert first_at and first_at[0] - start < total * 0.6
+    assert first_at
+    assert first_at[0] - start < total * 0.6
 
 
 @pytest.mark.parametrize("workers", [1, 3, 8])

@@ -107,9 +107,10 @@ def test_partial_progress_is_kept_when_a_chunk_explodes(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(batch_runner, "_apply_one", flaky)
+    manifest = _manifest(10)
     with pytest.raises(KeyboardInterrupt):
         run(
-            _manifest(10),
+            manifest,
             "tok",
             apply_tags=True,
             progress_path=prog,
@@ -274,5 +275,6 @@ def test_streaming_mode_searches_and_writes_per_file(tmp_path, monkeypatch):
         workers=1,
     )
     assert counts["updated"] == 5
-    assert seen and all(dry_run is False for _, dry_run in seen), seen
+    assert seen
+    assert all(dry_run is False for _, dry_run in seen), seen
     assert len(_rows(prog)) == 5

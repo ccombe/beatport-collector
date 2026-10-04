@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from collections.abc import Callable
 from typing import Any, ClassVar, Protocol
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,15 @@ def is_junk_value(value: str) -> tuple[bool, str]:
 def _keep_existing(existing: str, overwrite: bool) -> bool:
     """True when an existing value survives: no overwrite and legit content."""
     return bool(not overwrite and existing and not is_junk_value(existing)[0])
+
+
+def _try_load(loader: Callable[[str], Any], path: str) -> Any:
+    """Load audio via loader, warning and returning None when unreadable."""
+    try:
+        return loader(path)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Cannot load %s: %s", path, e)
+        return None
 
 
 class TagBackend(Protocol):
@@ -154,7 +164,7 @@ class ID3Backend:
             return ID3(path)
         except ID3NoHeaderError:
             return ID3()
-        except Exception as e:  # noqa: BLE001 - corrupt files read as empty
+        except Exception as e:  # noqa: BLE001
             logger.warning("Cannot load %s: %s", path, e)
             return None
 
@@ -284,11 +294,7 @@ class VorbisBackend:
     def _load(self, path: str):
         from mutagen.flac import FLAC
 
-        try:
-            return FLAC(path)
-        except Exception as e:  # noqa: BLE001 - corrupt files read as empty
-            logger.warning("Cannot load %s: %s", path, e)
-            return None
+        return _try_load(FLAC, path)
 
     def read_tags(self, path: str) -> dict[str, str]:
         audio = self._load(path)
@@ -355,7 +361,6 @@ class VorbisBackend:
 
     def restore_frames(self, path: str, frame_ids: list[str]) -> None:
         """Vorbis comments have no revision, so nothing can be dropped."""
-        return
 
 
 class MP4Backend:
@@ -382,11 +387,7 @@ class MP4Backend:
     def _load(self, path: str):
         from mutagen.mp4 import MP4
 
-        try:
-            return MP4(path)
-        except Exception as e:  # noqa: BLE001 - corrupt files read as empty
-            logger.warning("Cannot load %s: %s", path, e)
-            return None
+        return _try_load(MP4, path)
 
     def _first(self, audio, key: str) -> str:
         try:
@@ -470,7 +471,6 @@ class MP4Backend:
 
     def restore_frames(self, path: str, frame_ids: list[str]) -> None:
         """MP4 atoms are revision-agnostic, so nothing can be dropped."""
-        return
 
 
 BACKENDS: dict[str, TagBackend] = {}

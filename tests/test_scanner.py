@@ -263,7 +263,8 @@ class TestSparseManifest:
         assert [e["path"] for e in entries] == [str(sparse)]
         assert entries[0]["missing"] == ["genre", "date", "album"]
         assert str(complete) not in [e["path"] for e in entries]
-        assert calls and calls[-1][0] == len(entries)
+        assert calls
+        assert calls[-1][0] == len(entries)
 
     def test_ext_filter(self, tmp_path) -> None:
         make_mp3(tmp_path / "a.mp3")

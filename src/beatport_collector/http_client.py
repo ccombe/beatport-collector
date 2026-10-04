@@ -80,7 +80,7 @@ def _get_with_deadline(
     def _call() -> None:
         try:
             box["resp"] = requests.get(url, headers=headers, timeout=timeout)
-        except BaseException as e:  # noqa: BLE001 - re-raised on the caller thread
+        except BaseException as e:  # noqa: BLE001
             box["exc"] = e
 
     worker = threading.Thread(target=_call, daemon=True)
@@ -138,6 +138,18 @@ class BeatportClient:
                 time.sleep(gap)
             BeatportClient._last_start = time.monotonic()
 
+    def _retry_after_seconds(self, resp: requests.Response, backoff: float) -> float:
+        retry_after = resp.headers.get("Retry-After")
+        try:
+            return min(float(retry_after), MAX_RETRY_AFTER) if retry_after else backoff
+        except (ValueError, TypeError):
+            return backoff
+
+    def _sleep_backoff(self, wait: float, backoff: float, detail: str) -> float:
+        logger.warning("Beatport %s, backing off %.0fs", detail, wait)
+        time.sleep(wait)
+        return min(backoff * 2, 60.0)
+
     def get(self, url: str) -> dict[str, Any]:
         """GET *url* with gap spacing + Retry-After/exponential backoff.
 
@@ -156,32 +168,15 @@ class BeatportClient:
             except requests.RequestException as e:
                 if attempt >= self._max_retries:
                     raise
-                logger.warning(
-                    "Beatport request failed (%s), retry in %.0fs", e, backoff
-                )
-                time.sleep(backoff)
-                backoff = min(backoff * 2, 60.0)
+                backoff = self._sleep_backoff(backoff, backoff, f"request failed ({e})")
                 continue
             if resp.status_code == 429 or 500 <= resp.status_code < 600:
-                retry_after = resp.headers.get("Retry-After")
-                try:
-                    wait = (
-                        min(float(retry_after), MAX_RETRY_AFTER)
-                        if retry_after
-                        else backoff
-                    )
-                except (ValueError, TypeError):
-                    wait = backoff
                 if attempt >= self._max_retries:
                     resp.raise_for_status()
-                logger.warning(
-                    "Beatport %d, backing off %.0fs (attempt %d)",
-                    resp.status_code,
-                    wait,
-                    attempt + 1,
+                wait = self._retry_after_seconds(resp, backoff)
+                backoff = self._sleep_backoff(
+                    wait, backoff, f"{resp.status_code} (attempt {attempt + 1})"
                 )
-                time.sleep(wait)
-                backoff = min(backoff * 2, 60.0)
                 continue
             resp.raise_for_status()
             data: dict[str, Any] = resp.json()

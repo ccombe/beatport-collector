@@ -68,18 +68,6 @@ class CatalogTrack:
         sub = (data.get("sub_genre") or {}).get("name", "")
         release = data.get("release") or {}
         label = (data.get("label") or release.get("label") or {}).get("name", "")
-        # Prefer release artwork (500x500), fall back to track image.
-        art = ""
-        rel_img = release.get("image") or {}
-        trk_img = data.get("image") or {}
-        for img in (rel_img, trk_img):
-            dyn = img.get("dynamic_uri") or ""
-            if dyn:
-                art = dyn.replace("{w}", "500").replace("{h}", "500")
-                break
-            if img.get("uri"):
-                art = img["uri"]
-                break
         key = (data.get("key") or {}).get("name", "")
         return cls(
             id=int(data.get("id", 0)),
@@ -97,7 +85,7 @@ class CatalogTrack:
             key_name=key,
             isrc=data.get("isrc", "") or "",
             catalog_number=data.get("catalog_number", "") or "",
-            artwork_url=art,
+            artwork_url=_artwork_url(data, release),
             length_ms=int(data.get("length_ms", 0) or 0),
             raw=data,
         )
@@ -140,7 +128,11 @@ class CatalogTrack:
 
         def _str(key: str) -> str:
             val = data.get(key, "")
-            return val if isinstance(val, str) else ("" if val is None else str(val))
+            if isinstance(val, str):
+                return val
+            if val is None:
+                return ""
+            return str(val)
 
         return cls(
             id=_int("id"),
@@ -181,6 +173,17 @@ class CatalogTrack:
             "label": self.label,
             "isrc": self.isrc,
         }
+
+
+def _artwork_url(data: dict[str, Any], release: dict[str, Any]) -> str:
+    """Prefer release artwork (500x500), fall back to track image."""
+    for img in (release.get("image") or {}, data.get("image") or {}):
+        dyn = img.get("dynamic_uri") or ""
+        if dyn:
+            return dyn.replace("{w}", "500").replace("{h}", "500")
+        if img.get("uri"):
+            return str(img["uri"])
+    return ""
 
 
 def search_tracks(

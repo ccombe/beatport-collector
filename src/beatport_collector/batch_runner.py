@@ -120,7 +120,7 @@ def fetch_details_cached(
             track = catalog_api.fetch_track_detail(token, int(tid))
             jittered_sleep(delay)
             return tid, track.to_cache()
-        except Exception as e:  # noqa: BLE001 - one bad id must not kill the run
+        except Exception as e:  # noqa: BLE001
             logger.warning("Detail fetch failed for %s: %s", tid, e)
             return tid, None
 
@@ -189,7 +189,7 @@ class SnapshotStore:
             try:
                 track = catalog_api.fetch_track_detail(self._token, int(track_id))
                 snap: dict[str, object] | None = track.to_cache()
-            except Exception as e:  # noqa: BLE001 - delisted ids are expected
+            except Exception as e:  # noqa: BLE001
                 logger.warning("Detail fetch failed for %s: %s", track_id, e)
                 snap = None
             if snap is not None:
@@ -221,6 +221,81 @@ class SnapshotStore:
             logger.warning("Could not persist track cache: %s", e)
             with contextlib.suppress(OSError):
                 os.unlink(tmp)
+
+
+def _work_item(
+    m: dict[str, Any],
+    token: str,
+    store: SnapshotStore | None,
+    apply_now: bool,
+    art_overwrite: bool,
+) -> EnrichResult:
+    """One file: look it up (if needed) and write, in a single step."""
+    path = str(m["path"])
+    snapshot = m.get("snapshot") if isinstance(m.get("snapshot"), dict) else None
+    if apply_now or snapshot is not None:
+        # Streaming: search the catalog for this file right now.
+        found = enrich_one(token, path, dry_run=False, art_overwrite=art_overwrite)
+        return (
+            found
+            if found is not None
+            else EnrichResult(path, "", "", EnrichStatus.SKIPPED)
+        )
+    assert store is not None
+    return _apply_one(
+        path,
+        int(m.get("beatport_id") or 0),
+        store,
+        art_overwrite,
+        snapshot,
+    )
+
+
+def _reap(
+    tally: _Tally, m: dict[str, Any], result: EnrichResult | None, abandoned: bool
+) -> None:
+    if abandoned:
+        tally.count_abandoned()
+    elif result is not None:
+        tally.report(result)
+
+
+def _run_pool_chunk(
+    tally: _Tally,
+    chunk: list[dict[str, Any]],
+    token: str,
+    store: SnapshotStore | None,
+    apply_now: bool,
+    art_overwrite: bool,
+    workers: int,
+) -> None:
+    run_pool(
+        chunk,
+        lambda m: _work_item(m, token, store, apply_now, art_overwrite),
+        lambda m, result, abandoned: _reap(tally, m, result, abandoned),
+        workers=workers,
+        describe=lambda m: str(m.get("path")),
+        stop_when=lambda: tally.tripped,
+    )
+
+
+def _run_dry_chunk(
+    tally: _Tally,
+    chunk: list[dict[str, Any]],
+    token: str,
+    delay: float,
+    workers: int,
+) -> None:
+    # Dry-run results flow through progress_cb; the list itself is
+    # discarded, but the call must still run for its side effects.
+    enrich_many(
+        token,
+        [str(m["path"]) for m in chunk],
+        dry_run=True,
+        delay=delay,
+        workers=workers,
+        progress_cb=lambda r, n, t: tally.report(r),
+    )
 
 
 def _apply_one(
@@ -351,7 +426,7 @@ def run(
     delay: float = 2.0,
     workers: int = 4,
     art_overwrite: bool = False,
-    progress_cb: Any | None = None,
+    progress_cb: Callable[[EnrichResult, int, int], None] | None = None,
     apply_now: bool = False,
     chunk_size: int = DEFAULT_CHUNK,
     max_consecutive_failures: int = DEFAULT_FAILURE_LIMIT,
@@ -383,56 +458,16 @@ def run(
     tally = _Tally(progress_path, total, max_consecutive_failures, progress_cb)
     store = SnapshotStore(token, cache_path, delay=1.0) if apply_tags else None
 
-    def _work_item(m: dict[str, Any]) -> EnrichResult:
-        """One file: look it up (if needed) and write, in a single step."""
-        path = str(m["path"])
-        snapshot = m.get("snapshot") if isinstance(m.get("snapshot"), dict) else None
-        if apply_now or snapshot is not None:
-            # Streaming: search the catalog for this file right now.
-            found = enrich_one(token, path, dry_run=False, art_overwrite=art_overwrite)
-            return (
-                found
-                if found is not None
-                else EnrichResult(path, "", "", EnrichStatus.SKIPPED)
-            )
-        assert store is not None
-        return _apply_one(
-            path,
-            int(m.get("beatport_id") or 0),
-            store,
-            art_overwrite,
-            snapshot,
-        )
-
-    def _reap(m: dict[str, Any], result: EnrichResult | None, abandoned: bool) -> None:
-        if abandoned:
-            tally.count_abandoned()
-        elif result is not None:
-            tally.report(result)
-
     for start in range(0, total, chunk_size):
         if tally.tripped:
             break
         chunk = todo[start : start + chunk_size]
         if apply_tags or apply_now:
-            run_pool(
-                chunk,
-                _work_item,
-                _reap,
-                workers=workers,
-                describe=lambda m: str(m.get("path")),
-                stop_when=lambda: tally.tripped,
+            _run_pool_chunk(
+                tally, chunk, token, store, apply_now, art_overwrite, workers
             )
         else:
-            for _ in enrich_many(
-                token,
-                [str(m["path"]) for m in chunk],
-                dry_run=True,
-                delay=delay,
-                workers=workers,
-                progress_cb=lambda r, n, t: tally.report(r),
-            ):
-                pass
+            _run_dry_chunk(tally, chunk, token, delay, workers)
         if store is not None:
             store.flush()
         if start + chunk_size < total:
