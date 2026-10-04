@@ -252,7 +252,7 @@ def _work_item(
 
 
 def _reap(
-    tally: _Tally, m: dict[str, Any], result: EnrichResult | None, abandoned: bool
+    tally: _Tally, _m: dict[str, Any], result: EnrichResult | None, abandoned: bool
 ) -> None:
     if abandoned:
         tally.count_abandoned()

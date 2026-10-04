@@ -416,6 +416,22 @@ class MP4Backend:
         audio = self._load(path)
         return bool(audio and audio.get("covr"))
 
+    def _write_bpm(self, audio, val: str, overwrite: bool) -> None:
+        if not overwrite and self._first(audio, "tmpo"):
+            return
+        try:
+            bpm = int(val)
+        except (ValueError, TypeError):
+            return
+        audio["tmpo"] = [bpm]
+
+    def _write_atom(
+        self, audio, atom: str, val: str, overwrite: bool, encode: bool = False
+    ) -> None:
+        if _keep_existing(self._first(audio, atom), overwrite):
+            return
+        audio[atom] = [val.encode("utf-8")] if encode else [val]
+
     def write_updates(
         self, path: str, updates: dict[str, str], overwrite: bool
     ) -> None:
@@ -424,22 +440,13 @@ class MP4Backend:
             raise OSError(f"unreadable file: {path}")
         for key, val in updates.items():
             if key == "bpm":
-                if not overwrite and self._first(audio, "tmpo"):
-                    continue
-                try:
-                    audio["tmpo"] = [int(val)]
-                except (ValueError, TypeError):
-                    continue
+                self._write_bpm(audio, val, overwrite)
             elif key in self._MAP:
-                atom = self._MAP[key]
-                if _keep_existing(self._first(audio, atom), overwrite):
-                    continue
-                audio[atom] = [val]
+                self._write_atom(audio, self._MAP[key], val, overwrite)
             else:
-                atom = self._FREEFORM[key]
-                if _keep_existing(self._first(audio, atom), overwrite):
-                    continue
-                audio[atom] = [val.encode("utf-8")]
+                self._write_atom(
+                    audio, self._FREEFORM[key], val, overwrite, encode=True
+                )
         audio[self._PROVENANCE] = [b"1"]
         audio.save(path)
 
