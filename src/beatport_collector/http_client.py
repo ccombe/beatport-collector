@@ -80,7 +80,11 @@ def _get_with_deadline(
     def _call() -> None:
         try:
             box["resp"] = requests.get(url, headers=headers, timeout=timeout)
-        except BaseException as e:  # noqa: BLE001
+        # Shuttle, don't swallow: the worker thread must capture everything
+        # the request can raise (including KeyboardInterrupt/SystemExit, which
+        # plain `except Exception` would let kill the thread and leave `box`
+        # empty) so the caller reraises it via `box["exc"]` below.
+        except (Exception, KeyboardInterrupt, SystemExit) as e:  # noqa: BLE001
             box["exc"] = e
 
     worker = threading.Thread(target=_call, daemon=True)

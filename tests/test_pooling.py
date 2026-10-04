@@ -173,3 +173,22 @@ def test_worker_count_does_not_change_outcome(workers):
         workers=workers,
     )
     assert sorted(got) == items
+
+
+def test_stop_between_sweeps_defers_rest():
+    """The post-abandon stop check (not just the post-reap one) bites.
+
+    stop_when False at the first poll, True at the second: the single item
+    still completes (exactly-once holds) but the pool exits via the second
+    stop branch.
+    """
+    answers = iter([False, True])
+    done: list[int] = []
+    run_pool(
+        [1],
+        lambda i: i,
+        lambda i, r, _a: done.append(i),
+        workers=1,
+        stop_when=lambda: next(answers, True),
+    )
+    assert done == [1]

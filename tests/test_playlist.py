@@ -193,3 +193,50 @@ class TestCreatePlaylists:
 
         shutil.rmtree(out_dir, ignore_errors=True)
         os.remove(csv_path)
+
+    def test_rows_without_parseable_date_are_skipped(self) -> None:
+        import csv
+
+        csv_path = os.path.join(tempfile.gettempdir(), "test_nodate_matched.csv")
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(
+                f, fieldnames=["Local File Path", "Title", "Purchase Date"]
+            )
+            w.writeheader()
+            w.writerow(
+                {
+                    "Local File Path": "/music/a.mp3",
+                    "Title": "A",
+                    "Purchase Date": "not-a-date",
+                }
+            )
+            w.writerow(
+                {
+                    "Local File Path": "/music/b.mp3",
+                    "Title": "B",
+                    "Purchase Date": "2025-03-25",
+                }
+            )
+
+        out_dir = tempfile.mkdtemp()
+        result = create_playlists(csv_path, output_dir=out_dir)
+        assert list(result) == ["2025-03", "2025-0.m3u"]
+
+        import shutil
+
+        shutil.rmtree(out_dir, ignore_errors=True)
+        os.remove(csv_path)
+
+
+class TestWindowsFileUri:
+    def test_drive_letter_is_lowercased(self, monkeypatch) -> None:
+        # Simulate Windows path semantics (os.sep) so the drive branch
+        # fires even on Linux CI; Windows CI covers it natively.
+        import os
+
+        from beatport_collector.paths import file_uri_for_windows_path
+
+        monkeypatch.setattr(os, "sep", "\\")
+        uri = file_uri_for_windows_path("C:\\Music\\Club\\Track One.mp3")
+        assert uri.startswith("file://localhost/c%3A/")
+        assert "Track%20One.mp3" in uri

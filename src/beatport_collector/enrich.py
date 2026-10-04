@@ -82,10 +82,7 @@ def guess_from_filename(path: str) -> tuple[str, str]:
     if " - " not in stem:
         return "", stem
     artist, title = stem.split(" - ", 1)
-    artist, title = artist.strip(), title.strip()
-    if TRACK_NUM_RE.match(artist):
-        return "", title  # '03 - Fanfatas' -> title only, artist from folder
-    return artist, title
+    return artist.strip(), title.strip()
 
 
 def guess_from_folder(path: str, title: str) -> tuple[str, str]:

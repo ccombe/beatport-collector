@@ -75,3 +75,8 @@ _diag*.py
 _recover*.py
 _cmp*.py
 *_tmp.py
+
+# Coverage artifacts
+.coverage
+.coverage.*
+htmlcov/

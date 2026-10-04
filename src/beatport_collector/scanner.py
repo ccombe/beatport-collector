@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_EXTENSIONS = {".mp3", ".wav", ".flac", ".aiff", ".aac", ".ogg", ".wma", ".m4a"}
 
+FILE_PATH_FIELD = "File Path"
+LOCAL_FILE_PATH_FIELD = "Local File Path"
+
 ID3_COMMON: dict[str, str] = {
     "artist": "TPE1",
     "album_artist": "TPE2",
@@ -31,7 +34,7 @@ ID3_COMMON: dict[str, str] = {
 }
 
 CATALOG_FIELDS = (
-    "File Path",
+    FILE_PATH_FIELD,
     "Artist",
     "Album Artist",
     "Title",
@@ -62,7 +65,7 @@ MATCHED_CSV_FIELDS = (
     "Release ID",
     "Release Title",
     "Duration",
-    "Local File Path",
+    LOCAL_FILE_PATH_FIELD,
 )
 
 
@@ -88,7 +91,7 @@ DASH_SUFFIX = re.compile(
 ALL_PAREN_CONTENT = re.compile(r"\s*[\(\[][^\)\]]*[\)\]]\s*$")
 
 FEAT_PATTERN = re.compile(
-    r"\s+(feat\.|featuring|ft\.)\s+.+?$",
+    r"\s+(feat\.|featuring|ft\.)\s+.+$",
     re.IGNORECASE,
 )
 
@@ -147,30 +150,37 @@ def find_music_files(directory: str, extensions: set[str]) -> list[str]:
     return files
 
 
+def _read_tag_values(audio: Any) -> dict[str, Any]:
+    """Raw tag map from a mutagen object: lowercase keys, first values."""
+    tags: dict[str, Any] = {}
+    if not (hasattr(audio, "tags") and audio.tags):
+        return tags
+    for key in audio.tags:
+        vals = audio.tags.get(key)
+        if vals:
+            tags[key.lower()] = str(vals[0]) if isinstance(vals, list) else str(vals)
+    return tags
+
+
+def _map_id3_frames(tags: dict[str, Any]) -> None:
+    """Alias canonical names (artist/title/…) from raw ID3 frame ids in place."""
+    for name, frame_id in ID3_COMMON.items():
+        for variant in (frame_id, frame_id.lower()):
+            if tags.get(variant):
+                tags[name] = str(tags[variant])
+                break
+
+
 def read_file_tags(filepath: str) -> dict[str, Any]:
     """Read audio metadata tags from a file using mutagen."""
     try:
         audio = MutagenFile(filepath)
         if audio is None:
             return {}
-        tags: dict[str, Any] = {}
-        if hasattr(audio, "tags") and audio.tags:
-            for key in audio.tags:
-                vals = audio.tags.get(key)
-                if vals:
-                    tags[key.lower()] = (
-                        str(vals[0]) if isinstance(vals, list) else str(vals)
-                    )
-
-            for name, frame_id in ID3_COMMON.items():
-                for variant in (frame_id, frame_id.lower()):
-                    if tags.get(variant):
-                        tags[name] = str(tags[variant])
-                        break
-
+        tags = _read_tag_values(audio)
+        _map_id3_frames(tags)
         if hasattr(audio.info, "length"):
             tags["duration"] = audio.info.length
-
         return tags
     except Exception as e:  # noqa: BLE001
         logger.debug("Could not read tags from %s: %s", filepath, e)
@@ -189,7 +199,7 @@ def file_to_catalog_row(filepath: str) -> dict[str, str]:
     size = os.path.getsize(filepath)
     dur = tags.get("duration", 0) or 0
     return {
-        "File Path": filepath,
+        FILE_PATH_FIELD: filepath,
         "Artist": tags.get("artist", ""),
         "Album Artist": tags.get("album_artist", ""),
         "Title": tags.get("title", ""),
@@ -409,14 +419,14 @@ class _CatalogIndex:
         for entry in catalog:
             isrc = entry.get("ISRC", "").strip()
             if isrc:
-                idx.by_isrc.setdefault(isrc, []).append(entry.get("File Path", ""))
+                idx.by_isrc.setdefault(isrc, []).append(entry.get(FILE_PATH_FIELD, ""))
 
             artist = _norm_artist(entry.get("Artist", ""))
             album = normalize(entry.get("Album", ""))
             clean = clean_title(entry.get("Title", ""))
             idx.flat.append(
                 _Flat(
-                    path=entry.get("File Path", ""),
+                    path=entry.get(FILE_PATH_FIELD, ""),
                     artist=artist,
                     album=album,
                     clean=clean,
@@ -427,14 +437,16 @@ class _CatalogIndex:
 
             if album and clean:
                 idx.by_album_clean.setdefault((album, clean), []).append(
-                    entry.get("File Path", "")
+                    entry.get(FILE_PATH_FIELD, "")
                 )
             if artist and clean:
                 idx.by_artist_clean.setdefault((artist, clean), []).append(
-                    entry.get("File Path", "")
+                    entry.get(FILE_PATH_FIELD, "")
                 )
             if clean:
-                idx.by_clean.setdefault(clean, []).append(entry.get("File Path", ""))
+                idx.by_clean.setdefault(clean, []).append(
+                    entry.get(FILE_PATH_FIELD, "")
+                )
         return idx
 
 
@@ -647,7 +659,7 @@ def match_tracks_to_files(
                 break
 
         out = dict(row)
-        out["Local File Path"] = local_path
+        out[LOCAL_FILE_PATH_FIELD] = local_path
         augmented.append(out)
 
         if local_path:
