@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from beatport_collector.scanner import (
+from beatport_collector.matching import (
     MATCHED_CSV_FIELDS,
     _norm_artist,
     _parse_artists,
     clean_title,
-    match_tracks_to_files,
     normalize,
+)
+from beatport_collector.scanner import (
+    match_tracks_to_files,
     scan_sparse_manifest,
 )
 from tests.helpers import make_mp3
@@ -80,7 +82,7 @@ class TestParseArtists:
 
 class TestLevenshtein:
     def test_known_distances(self) -> None:
-        from beatport_collector.scanner import levenshtein
+        from beatport_collector.matching import levenshtein
 
         assert levenshtein("", "") == 0
         assert levenshtein("abc", "abc") == 0

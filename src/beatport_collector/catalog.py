@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 from collections.abc import Callable
 from typing import Any, Self
 
-from beatport_collector.scanner import DEFAULT_EXTENSIONS as _DE
-from beatport_collector.scanner import (
+from mutagen import File as MutagenFile
+
+from beatport_collector.matching import (
+    DEFAULT_EXTENSIONS as _DE,
+)
+from beatport_collector.matching import (
     FILE_PATH_FIELD,
     LOCAL_FILE_PATH_FIELD,
     _artists_overlap,
@@ -16,13 +21,106 @@ from beatport_collector.scanner import (
     _parse_artists,
     _Query,
     clean_title,
-    file_to_catalog_row,
-    find_music_files,
     levenshtein,
     normalize,
 )
 
 logger = logging.getLogger(__name__)
+
+# ── Filesystem layer ─────────────────────────────────────────
+#
+# Reading files is the catalog builder's job: Catalog.build() walks a
+# directory and inserts one row per file. It lives here rather than in
+# scanner so that this module depends only on `matching` and never on
+# scanner — that is what keeps the import graph acyclic.
+
+
+ID3_COMMON: dict[str, str] = {
+    "artist": "TPE1",
+    "album_artist": "TPE2",
+    "title": "TIT2",
+    "album": "TALB",
+    "isrc": "TSRC",
+    "date": "TDRC",
+    "genre": "TCON",
+    "tracknumber": "TRCK",
+}
+
+
+def find_music_files(directory: str, extensions: set[str]) -> list[str]:
+    """Recursively find all music files with given extensions."""
+    files: list[str] = []
+    for root, _, filenames in os.walk(directory):
+        for f in filenames:
+            ext = os.path.splitext(f)[1].lower()
+            if ext in extensions:
+                files.append(os.path.join(root, f))
+    logger.info("Found %d music files in %s", len(files), directory)
+    return files
+
+
+def _read_tag_values(audio: Any) -> dict[str, Any]:
+    """Raw tag map from a mutagen object: lowercase keys, first values."""
+    tags: dict[str, Any] = {}
+    if not (hasattr(audio, "tags") and audio.tags):
+        return tags
+    for key in audio.tags:
+        vals = audio.tags.get(key)
+        if vals:
+            tags[key.lower()] = str(vals[0]) if isinstance(vals, list) else str(vals)
+    return tags
+
+
+def _map_id3_frames(tags: dict[str, Any]) -> None:
+    """Alias canonical names (artist/title/…) from raw ID3 frame ids in place."""
+    for name, frame_id in ID3_COMMON.items():
+        for variant in (frame_id, frame_id.lower()):
+            if tags.get(variant):
+                tags[name] = str(tags[variant])
+                break
+
+
+def read_file_tags(filepath: str) -> dict[str, Any]:
+    """Read audio metadata tags from a file using mutagen."""
+    try:
+        audio = MutagenFile(filepath)
+        if audio is None:
+            return {}
+        tags = _read_tag_values(audio)
+        _map_id3_frames(tags)
+        if hasattr(audio.info, "length"):
+            tags["duration"] = audio.info.length
+        return tags
+    except Exception as e:  # noqa: BLE001
+        logger.debug("Could not read tags from %s: %s", filepath, e)
+        return {}
+
+
+def _format_duration(seconds: float) -> str:
+    m = int(seconds // 60)
+    s = int(seconds % 60)
+    return f"{m}:{s:02d}"
+
+
+def file_to_catalog_row(filepath: str) -> dict[str, str]:
+    """Read a music file and return a catalog CSV row."""
+    tags = read_file_tags(filepath)
+    size = os.path.getsize(filepath)
+    dur = tags.get("duration", 0) or 0
+    return {
+        FILE_PATH_FIELD: filepath,
+        "Artist": tags.get("artist", ""),
+        "Album Artist": tags.get("album_artist", ""),
+        "Title": tags.get("title", ""),
+        "Album": tags.get("album", ""),
+        "ISRC": tags.get("isrc", ""),
+        "Track Number": tags.get("tracknumber", ""),
+        "Genre": tags.get("genre", ""),
+        "Date": tags.get("date", ""),
+        "Duration": _format_duration(float(dur)),
+        "File Size": str(size),
+    }
+
 
 _ALBUM_SUBSTRING_QUERY = (
     "SELECT file_path, artist, clean_title FROM tracks WHERE "

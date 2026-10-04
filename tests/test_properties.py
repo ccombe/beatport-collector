@@ -16,16 +16,16 @@ from hypothesis import strategies as st
 
 from beatport_collector import enrich, tagger
 from beatport_collector.catalog import Catalog
-from beatport_collector.playlist import _parse_purchase_date
-from beatport_collector.pooling import run_pool
-from beatport_collector.scanner import (
+from beatport_collector.matching import (
     MATCHED_CSV_FIELDS,
     _norm_artist,
     _parse_artists,
     clean_title,
-    match_tracks_to_files,
     normalize,
 )
+from beatport_collector.playlist import _parse_purchase_date
+from beatport_collector.pooling import run_pool
+from beatport_collector.scanner import match_tracks_to_files
 from beatport_collector.types import CSV_FIELDS, Track, track_to_row
 
 nasty_text = st.text()
