@@ -239,6 +239,20 @@ uv run --group dev ruff format src/ tests/
 uv run --group dev ty check src/ tests/
 ```
 
+Mutation testing (WSL/Linux only — mutmut needs `fork()`):
+
+```bash
+export UV_PROJECT_ENVIRONMENT=.venv-wsl
+uv run --group dev mutmut run --max-children 8  # incremental, safe to stop
+uv run --group dev mutmut results                # survivors to triage
+uv run --group dev mutmut run "beatport_collector.pooling*"  # one module
+```
+
+A full run takes ~15 min locally. CI runs it weekly (`.github/workflows/mutation.yml`,
+advisory, never blocking) and uploads the results. Workflow: kill a survivor
+with a new test, re-run that mutant by name, repeat. State lives in `mutants/`
+(gitignored); delete it to start from scratch.
+
 Some tests need your real purchase CSV and catalog DB, and skip cleanly without
 them. The matcher parity gate (`tests/test_parity.py`) checks that the in-memory
 and SQLite matchers agree over your real data, so any change to one must keep

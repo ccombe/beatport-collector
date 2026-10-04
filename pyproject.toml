@@ -20,7 +20,15 @@ dev = [
     "pytest>=8",
     "ruff>=0.16.9",
     "ty>=0.0.84",
+    "mutmut>=3.0",
+    "hypothesis>=6.0",
 ]
+
+[tool.mutmut]
+source_paths = ["src/"]
+pytest_add_cli_args_test_selection = ["tests/"]
+# Log text is never asserted: mutating it only produces noise survivors.
+do_not_mutate_patterns = ['logger\\.\\w+']
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

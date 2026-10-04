@@ -25,6 +25,10 @@ beatport_session.json
 
 # Testing
 .pytest_cache/
+.hypothesis/
+
+# Mutation testing state (incremental cache, regenerable)
+mutants/
 
 # Playlists
 playlists/
@@ -59,6 +63,10 @@ gdrive_*
 .repair-*
 .trackcache-*
 *.tmp
+
+# Code inspection / visualization (local, regenerable)
+.codegraph/
+codegraph.html
 
 # Throwaway probes
 probe*.*
