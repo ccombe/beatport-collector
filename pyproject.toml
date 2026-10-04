@@ -28,14 +28,16 @@ dev = [
 source_paths = ["src/"]
 pytest_add_cli_args_test_selection = ["tests/"]
 # Prose is never asserted: mutating it only produces noise survivors. Log
-# text, argparse help strings, and metavar/description text are docs, not
-# behaviour. Behavioural messages that ARE asserted (the progress line,
-# error text) are deliberately not listed here.
+# text, argparse help strings, and console banners are docs, not behaviour.
+# Returned strings that tests *do* assert (the progress line) are not print
+# statements, so they stay under mutation.
 do_not_mutate_patterns = [
     'logger\\.\\w+',
     'help=',
     'description=',
     'metavar=',
+    # TOML literal string: one backslash, so the regex sees an escaped paren.
+    '^\s*print\(',
 ]
 
 [tool.pytest.ini_options]
