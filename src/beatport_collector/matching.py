@@ -63,21 +63,42 @@ MATCHED_CSV_FIELDS = (
 MIX_KEYWORDS = "mix|edit|remix|version|rework|dub|vocal|instrumental|extended|radio|reprise|reprise|dub|dub mix"
 
 TITLE_SUFFIXES = re.compile(
-    rf"\s*[\(\[][^\)\]]*?(?:{MIX_KEYWORDS}|feat\.|featuring)[^\)]*[\)\]]\s*$",
+    # Two guards, both load-bearing.
+    #
+    # `(?<!\s)` stops the leading run from *starting mid-run*. Without it the
+    # engine retries from every offset inside a whitespace run and rescans
+    # the run each time, which is quadratic on any subject containing one
+    # (measured x3.9 per doubling). A mid-string run survives clean_title's
+    # strip, so this is reachable from real tag data, not just from a
+    # hand-crafted string.
+    #
+    # The `{0,120}` cap stops the lazy inner run being retried at every
+    # length, once per offset that looks like an opening bracket. Unbounded,
+    # that alone was 1.6s on a 4k nested-bracket string.
+    #
+    # Neither changes what matches: a run starting mid-whitespace can only
+    # match a suffix of what the same pattern matches from the run's start.
+    # See tests/test_regex_linearity.py, which enforces the growth factor so
+    # this cannot silently regress.
+    rf"(?<!\s)\s*[\(\[][^)\]]{{0,120}}?(?:{MIX_KEYWORDS}|feat\.|featuring)"
+    r"[^\)]*[\)\]]\s*$",
     re.IGNORECASE,
 )
 
 SIMPLE_TITLE_SUFFIX = re.compile(
-    r"\s+(original mix|extended mix|radio edit|club mix|dub mix|vocal mix|instrumental|remix|edit|rework)\s*$",
+    r"(?<!\s)\s+(original mix|extended mix|radio edit|club mix|dub mix|vocal mix|instrumental|remix|edit|rework)\s*$",
     re.IGNORECASE,
 )
 
 DASH_SUFFIX = re.compile(
-    r"\s+[-–—]\s+(original mix|extended mix|radio edit|club mix|dub mix|vocal mix|instrumental|remix|edit|rework)\s*$",
+    r"(?<!\s)\s+[-–—]\s+(original mix|extended mix|radio edit|club mix|dub mix|vocal mix|instrumental|remix|edit|rework)\s*$",
     re.IGNORECASE,
 )
 
-ALL_PAREN_CONTENT = re.compile(r"\s*[\(\[][^\)\]]*[\)\]]\s*$")
+ALL_PAREN_CONTENT = re.compile(
+    r"(?<!\s)\s*[\(\[][^)\]]{0,120}[\)\]]\s*$",
+    re.IGNORECASE,
+)
 
 FEAT_PATTERN = re.compile(
     # The lookbehind is load-bearing, not decoration. Without it the leading
