@@ -10,6 +10,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from beatport_collector import enrich as enrich_mod
 from beatport_collector.catalog_api import CatalogTrack
 from beatport_collector.enrich import (
@@ -342,9 +344,7 @@ def test_apply_musicbrainz_empty_result(monkeypatch) -> None:
         "T",
         None,
         "no-candidates",
-        dry_run=True,
-        overwrite=False,
-        art_overwrite=False,
+        mode=enrich_mod.WriteMode(dry_run=True, overwrite=False, art_overwrite=False),
     )
     assert r.status == EnrichStatus("no-candidates")
     thin = SimpleNamespace(release="", date="", label="", title="T", artist="A")
@@ -355,9 +355,7 @@ def test_apply_musicbrainz_empty_result(monkeypatch) -> None:
         "T",
         None,
         "ambiguous",
-        dry_run=True,
-        overwrite=False,
-        art_overwrite=False,
+        mode=enrich_mod.WriteMode(dry_run=True, overwrite=False, art_overwrite=False),
     )
     assert r.status == EnrichStatus.AMBIGUOUS
 
@@ -383,9 +381,7 @@ def test_apply_musicbrainz_resolves_match(monkeypatch) -> None:
         "T",
         200_000,
         "no-candidates",
-        dry_run=False,
-        overwrite=False,
-        art_overwrite=False,
+        mode=enrich_mod.WriteMode(dry_run=False, overwrite=False, art_overwrite=False),
     )
     assert r.source == "musicbrainz"
     assert r.beatport_date == "2023-05-06"
@@ -434,3 +430,194 @@ def test_apply_match_dry_run_and_write(monkeypatch, tmp_path) -> None:
     r = apply_match(str(tmp_path), "A", "T", track, dry_run=False)
     assert r.applied is not None
     assert calls == [True, False]
+
+
+# --- fallback chain: MusicBrainz, then Discogs only if that found nothing ---
+
+
+def test_enrich_one_falls_back_to_discogs(monkeypatch, tmp_path) -> None:
+    _mock_tags(monkeypatch)
+    monkeypatch.setattr(enrich_mod, "_file_duration_ms", lambda p: None)
+    monkeypatch.setattr(enrich_mod.catalog_api, "search_tracks", lambda *a, **k: [])
+    monkeypatch.setattr(
+        enrich_mod.catalog_api, "pick_best", lambda cands, **k: (None, "no-candidates")
+    )
+    monkeypatch.setattr(
+        enrich_mod,
+        "_apply_musicbrainz",
+        lambda *a, **k: EnrichResult("p", "A", "T", EnrichStatus.NO_CANDIDATES),
+    )
+    dg = EnrichResult("p", "A", "T", EnrichStatus.MATCHED, source="discogs")
+    monkeypatch.setattr(enrich_mod, "_apply_discogs", lambda *a, **k: dg)
+    assert enrich_one("t", _mp3(tmp_path)) is dg
+
+
+def test_discogs_not_tried_once_musicbrainz_resolved(monkeypatch, tmp_path) -> None:
+    _mock_tags(monkeypatch)
+    monkeypatch.setattr(enrich_mod, "_file_duration_ms", lambda p: None)
+    monkeypatch.setattr(enrich_mod.catalog_api, "search_tracks", lambda *a, **k: [])
+    monkeypatch.setattr(
+        enrich_mod.catalog_api, "pick_best", lambda cands, **k: (None, "no-candidates")
+    )
+    mb = EnrichResult("p", "A", "T", EnrichStatus.MATCHED, source="musicbrainz")
+    monkeypatch.setattr(enrich_mod, "_apply_musicbrainz", lambda *a, **k: mb)
+    monkeypatch.setattr(
+        enrich_mod,
+        "_apply_discogs",
+        lambda *a, **k: pytest.fail("must not second-guess a source that matched"),
+    )
+    assert enrich_one("t", _mp3(tmp_path)) is mb
+
+
+def test_verify_failed_still_counts_as_resolved(monkeypatch, tmp_path) -> None:
+    """The data was found; only the write was refused, so do not re-search."""
+    _mock_tags(monkeypatch)
+    monkeypatch.setattr(enrich_mod, "_file_duration_ms", lambda p: None)
+    monkeypatch.setattr(enrich_mod.catalog_api, "search_tracks", lambda *a, **k: [])
+    monkeypatch.setattr(
+        enrich_mod.catalog_api, "pick_best", lambda cands, **k: (None, "no-candidates")
+    )
+    monkeypatch.setattr(
+        enrich_mod,
+        "_apply_musicbrainz",
+        lambda *a, **k: EnrichResult("p", "A", "T", EnrichStatus.VERIFY_FAILED),
+    )
+    monkeypatch.setattr(
+        enrich_mod,
+        "_apply_discogs",
+        lambda *a, **k: pytest.fail("a refused write is not a lookup failure"),
+    )
+    r = enrich_one("t", _mp3(tmp_path))
+    assert r is not None
+    assert r.status is EnrichStatus.VERIFY_FAILED
+
+
+class TestApplyDiscogs:
+    def _wire(self, monkeypatch, tmp_path):
+        _mock_tags(monkeypatch)
+        monkeypatch.setattr(
+            enrich_mod.tagger,
+            "current_tags",
+            lambda p: {
+                "artist": "A",
+                "title": "T",
+                "album": "",
+                "genre": "",
+                "date": "",
+            },
+        )
+        monkeypatch.setattr(
+            enrich_mod.tagger, "is_missing_key_tags", lambda p: (True, ["genre"])
+        )
+        return _mp3(tmp_path)
+
+    def test_no_token_is_a_quiet_no_op(self, monkeypatch, tmp_path) -> None:
+        """The keyless contract: absent credential means absent source."""
+        from beatport_collector import discogs
+
+        monkeypatch.delenv(discogs.TOKEN_ENV, raising=False)
+        path = self._wire(monkeypatch, tmp_path)
+        r = enrich_mod._apply_discogs(
+            path,
+            "A",
+            "T",
+            1000,
+            "no-candidates",
+            mode=enrich_mod.WriteMode(
+                dry_run=True, overwrite=False, art_overwrite=False
+            ),
+        )
+        assert r.status is EnrichStatus.NO_CANDIDATES
+        assert r.source == "beatport"
+
+    def test_match_becomes_a_tag_plan(self, monkeypatch, tmp_path) -> None:
+        from beatport_collector import discogs
+
+        monkeypatch.setenv(discogs.TOKEN_ENV, "t")
+        match = discogs.DiscogsMatch(
+            release_id=7,
+            title="T",
+            artist="A",
+            release="An Album",
+            date="2023-03-20",
+            label="L",
+            genre="Tech House",
+            artwork_url="http://img",
+        )
+        monkeypatch.setattr(discogs, "search_release", lambda *a, **k: match)
+        seen: dict = {}
+        monkeypatch.setattr(
+            enrich_mod,
+            "apply_match",
+            lambda p, a, t, track, **kw: (
+                seen.update(track=track) or EnrichResult(p, a, t, EnrichStatus.MATCHED)
+            ),
+        )
+        path = self._wire(monkeypatch, tmp_path)
+        r = enrich_mod._apply_discogs(
+            path,
+            "A",
+            "T",
+            1000,
+            "no-candidates",
+            mode=enrich_mod.WriteMode(
+                dry_run=True, overwrite=False, art_overwrite=False
+            ),
+        )
+        assert r.source == "discogs"
+        assert seen["track"].genre == "Tech House"
+        assert seen["track"].release_name == "An Album"
+        assert seen["track"].artwork_url == "http://img"
+
+    def test_no_match_reports_the_original_reason(self, monkeypatch, tmp_path) -> None:
+        from beatport_collector import discogs
+
+        monkeypatch.setenv(discogs.TOKEN_ENV, "t")
+        monkeypatch.setattr(discogs, "search_release", lambda *a, **k: None)
+        path = self._wire(monkeypatch, tmp_path)
+        r = enrich_mod._apply_discogs(
+            path,
+            "A",
+            "T",
+            1000,
+            "ambiguous",
+            mode=enrich_mod.WriteMode(
+                dry_run=True, overwrite=False, art_overwrite=False
+            ),
+        )
+        assert r.status is EnrichStatus.AMBIGUOUS
+
+    def test_empty_match_is_treated_as_no_match(self, monkeypatch, tmp_path) -> None:
+        from beatport_collector import discogs
+
+        monkeypatch.setenv(discogs.TOKEN_ENV, "t")
+        monkeypatch.setattr(
+            discogs, "search_release", lambda *a, **k: discogs.DiscogsMatch(title="T")
+        )
+        path = self._wire(monkeypatch, tmp_path)
+        r = enrich_mod._apply_discogs(
+            path,
+            "A",
+            "T",
+            1000,
+            "no-candidates",
+            mode=enrich_mod.WriteMode(
+                dry_run=True, overwrite=False, art_overwrite=False
+            ),
+        )
+        assert r.status is EnrichStatus.NO_CANDIDATES
+
+
+class TestStatusCoercion:
+    def test_known_reason(self) -> None:
+        assert (
+            enrich_mod._status_or("ambiguous", EnrichStatus.NO_CANDIDATES)
+            is EnrichStatus.AMBIGUOUS
+        )
+
+    def test_unknown_reason_falls_back(self) -> None:
+        """A stray reason must not raise: that abandons the file silently."""
+        assert (
+            enrich_mod._status_or("x", EnrichStatus.NO_CANDIDATES)
+            is EnrichStatus.NO_CANDIDATES
+        )

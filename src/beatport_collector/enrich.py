@@ -142,6 +142,26 @@ class EnrichStatus(StrEnum):
     VERIFY_FAILED = "verify-failed"
 
 
+#: A source resolved the track if it found it at all. VERIFY_FAILED counts:
+#: the data was found and only the *write* was refused, so trying another
+#: source would be second-guessing a match rather than fixing a miss.
+_RESOLVED_STATUSES = (EnrichStatus.MATCHED, EnrichStatus.VERIFY_FAILED)
+
+
+def _status_or(reason: str, default: EnrichStatus) -> EnrichStatus:
+    """Coerce a pick_best reason into a status, tolerating an unknown one.
+
+    ``reason`` comes from pick_best as a free-form string, and it is also
+    monkeypatched in tests. Passing an unrecognised value straight to
+    EnrichStatus() raises ValueError, which would abandon the file and report
+    nothing at all -- strictly worse than reporting the default.
+    """
+    try:
+        return EnrichStatus(reason)
+    except ValueError:
+        return default
+
+
 @dataclass
 class EnrichResult:
     path: str
@@ -359,22 +379,34 @@ def _search_candidates(
     )
 
 
+@dataclass(frozen=True)
+class WriteMode:
+    """How a resolution is allowed to touch the file.
+
+    Bundled because it travels together through every fallback: three keyword
+    arguments repeated at each call site is how one of them ends up missing.
+    """
+
+    dry_run: bool = True
+    overwrite: bool = False
+    art_overwrite: bool = False
+
+
 def _apply_musicbrainz(
     path: str,
     artist: str,
     title: str,
     duration_ms: int | None,
     reason: str,
-    *,
-    dry_run: bool,
-    overwrite: bool,
-    art_overwrite: bool,
+    mode: WriteMode,
 ) -> EnrichResult:
     from beatport_collector import musicbrainz
 
     mb = musicbrainz.search_recording(artist, title, duration_ms=duration_ms)
     if mb is None or not (mb.release or mb.date or mb.label):
-        return EnrichResult(path, artist, title, status=EnrichStatus(reason))
+        return EnrichResult(
+            path, artist, title, status=_status_or(reason, EnrichStatus.NO_CANDIDATES)
+        )
     mb_track = catalog_api.CatalogTrack(
         id=0,
         name=mb.title or title,
@@ -388,14 +420,61 @@ def _apply_musicbrainz(
         artist,
         title,
         mb_track,
-        dry_run=dry_run,
-        overwrite=overwrite,
-        art_overwrite=art_overwrite,
+        dry_run=mode.dry_run,
+        overwrite=mode.overwrite,
+        art_overwrite=mode.art_overwrite,
     )
     mb_result.source = "musicbrainz"
     mb_result.snapshot = mb_track.to_cache()
     mb_result.beatport_date = mb.date
     return mb_result
+
+
+def _apply_discogs(
+    path: str,
+    artist: str,
+    title: str,
+    duration_ms: int | None,
+    reason: str,
+    mode: WriteMode,
+) -> EnrichResult:
+    """Second fallback: Discogs, which unlike MusicBrainz can supply genre.
+
+    A no-op returning an unchanged result when no token is configured, so a
+    machine without a Discogs account behaves exactly as if this did not exist.
+    """
+    from beatport_collector import discogs
+
+    if not discogs.is_available():
+        return EnrichResult(
+            path, artist, title, status=_status_or(reason, EnrichStatus.NO_CANDIDATES)
+        )
+    match = discogs.search_release(artist, title, duration_ms=duration_ms)
+    if match is None or not (match.release or match.date or match.genre):
+        return EnrichResult(
+            path, artist, title, status=_status_or(reason, EnrichStatus.NO_CANDIDATES)
+        )
+    track = catalog_api.CatalogTrack(
+        id=0,
+        name=match.title or title,
+        artists=match.artist or artist,
+        release_name=match.release,
+        publish_date=match.date,
+        label=match.label,
+        genre=match.genre,
+        artwork_url=match.artwork_url,
+    )
+    result = apply_match(
+        path,
+        artist,
+        title,
+        track,
+        dry_run=mode.dry_run,
+        overwrite=mode.overwrite,
+        art_overwrite=mode.art_overwrite,
+    )
+    result.source = "discogs"
+    return result
 
 
 def enrich_one(
@@ -455,18 +534,18 @@ def enrich_one(
         logger.warning("Search failed for %s - %s: %s", artist, title, e)
         return EnrichResult(path, artist, title, status=EnrichStatus.ERROR)
     if not best:
-        # Beatport came up empty — try MusicBrainz (release/date/label
-        # only; never genre/BPM/key). Score + artist gates inside.
-        return _apply_musicbrainz(
-            path,
-            artist,
-            title,
-            duration_ms,
-            reason,
-            dry_run=dry_run,
-            overwrite=overwrite,
-            art_overwrite=art_overwrite,
+        # Beatport came up empty. Fall back through the sources that need no
+        # Beatport account, cheapest first: MusicBrainz (release/date/label
+        # only; never genre/BPM/key, its genre data is too sparse to trust),
+        # then Discogs for whatever is still missing -- it is keyed, so it is
+        # skipped silently when no token is configured.
+        mode = WriteMode(
+            dry_run=dry_run, overwrite=overwrite, art_overwrite=art_overwrite
         )
+        result = _apply_musicbrainz(path, artist, title, duration_ms, reason, mode)
+        if result.status not in _RESOLVED_STATUSES:
+            result = _apply_discogs(path, artist, title, duration_ms, reason, mode)
+        return result
     result = apply_match(
         path,
         artist,
