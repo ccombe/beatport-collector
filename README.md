@@ -131,6 +131,19 @@ uv run beatport-collector batch sparse.json --progress dryrun.jsonl --workers 4 
 The dry run resolves every match and logs it. The second command reuses those
 matches, so no re-searching.
 
+If you would rather keep the two steps as separate commands — say you want the
+dry run's log to be the thing you approve from — `apply` does the same job
+explicitly:
+
+```bash
+uv run beatport-collector apply dryrun.jsonl --progress apply_progress.jsonl
+```
+
+It reuses the matches already in `dryrun.jsonl` and fetches each unique track's
+details once, caching them to `--cache` so a second run costs no API calls.
+`batch --apply` is the same thing with the batch manifest still in hand; use
+whichever you find clearer.
+
 **2. Stream** (recommended for large libraries)
 
 ```bash
@@ -248,33 +261,88 @@ uv run --group dev mutmut results                # survivors to triage
 uv run --group dev mutmut run "beatport_collector.pooling*"  # one module
 ```
 
-A full run takes ~15 min locally. CI runs it weekly (`.github/workflows/mutation.yml`,
-advisory, never blocking) and uploads the results. Workflow: kill a survivor
-with a new test, re-run that mutant by name, repeat. State lives in `mutants/`
-(gitignored); delete it to start from scratch.
+A full run takes ~5-15 min depending on core count. CI runs it weekly
+(Mondays 06:00 UTC, `.github/workflows/mutation.yml`, advisory, never blocking)
+and uploads the results as an artifact; trigger one early with
+`gh workflow run mutation.yml`. Workflow: kill a survivor with a new test,
+re-run that mutant by name, repeat. State lives in `mutants/` (gitignored);
+delete it to start from scratch.
+
+The score measures logic, not prose. `do_not_mutate_patterns` in `pyproject.toml`
+excludes log calls, argparse `help=`/`description=`/`metavar=`, and `print`
+banners, since no test asserts their wording and mutating them only produces
+survivors. Strings a test *does* assert — the progress line, error text — are
+returned rather than printed, so they stay under mutation. When you add a new
+kind of non-behavioural string, add it here rather than writing assertions
+about wording.
 
 Some tests need your real purchase CSV and catalog DB, and skip cleanly without
 them. The matcher parity gate (`tests/test_parity.py`) checks that the in-memory
 and SQLite matchers agree over your real data, so any change to one must keep
 outcomes identical in the other.
 
+### What CI enforces
+
+`master` requires a PR and three green checks:
+
+| check | what it proves |
+|---|---|
+| `ubuntu-latest` | lint, format, types and tests on Linux |
+| `windows-latest` | the same on Windows — the library tooling runs on both |
+| `SonarCloud Code Analysis` | the SonarCloud quality gate on the PR |
+
+The gate is the thing to watch when a PR is red: it reports the conditions
+(bugs, vulnerabilities, smells, coverage on new code) rather than just
+pass/fail. Both test jobs must pass on **both** platforms — a change that only
+works on one will not merge, which is deliberate, since people run this from
+whichever side can see their music.
+
+SonarCloud reports shape-based findings too, and a few are known false
+positives where the rule cannot see the construct that makes the code correct.
+Those are marked False Positive in the UI with a justification, and
+`matching.py` is the place they cluster: its regexes carry a `(?<!\s)` lookbehind
+that S8786's static check does not model. The invariants those lookbeheads and
+repetition caps enforce are asserted in `tests/test_regex_guards.py` — if you
+touch those patterns, that test is the one to run.
+
+### Coverage
+
+Line coverage is 100% of all 19 modules, and that is treated as a floor rather
+than a goal. The interesting code here is I/O-shaped — tag writers, atomic
+replaces, resume logs — where the failure modes are the bugs, so a branch that
+never executes is a branch nobody has checked.
+
+Mutation testing is the second gate on that. Line coverage says a line ran;
+mutation says the assertions would notice if it were wrong. A high score with
+weak assertions looks identical to a high score with strong ones, which is why
+the survivors get triaged by hand rather than ignored.
+
 ### Layout
+
+Dependencies flow one way, top to bottom. `matching` has no I/O at all, which
+is what lets the in-memory and SQLite matchers share one implementation of
+the text rules without importing each other.
 
 ```
 src/beatport_collector/
-  cli.py            argv parsing and the progress display
-  api.py            Beatport auth + purchase export
+  cli.py            argv parsing, per-command handlers, progress display
+  config.py         constants and URLs
+  paths.py          Windows <-> WSL <-> file:// URI conversion
+  types.py          dataclasses for API payloads and CSV rows
+  session.py        OAuth login against Beatport API v4
+  api.py            purchase-history paging and CSV export
+  http_client.py    all transport: auth header, gap gate, backoff, deadline
   catalog_api.py    catalog search + track details
-  http_client.py    all transport: auth, gap gate, backoff
-  scanner.py        file discovery, tag reading, 13 matching strategies
-  catalog.py        SQLite catalog + the same strategies in SQL
-  tagger.py         plan → temp copy → verify → atomic replace
+  musicbrainz.py    fallback lookups when Beatport has nothing
+  matching.py       pure text normalisation + the purchase-row query model
+  catalog.py        SQLite catalog, tag reading, the strategies in SQL
+  scanner.py        in-memory index, the same strategies in Python, scan CLI
+  playlist.py       .m3u + Rekordbox XML
+  tagger.py         plan -> temp copy -> verify -> atomic replace
   backends.py       tag container ports (ID3 / Vorbis / MP4)
   enrich.py         search waterfall, per-file enrichment
   batch_runner.py   batch/apply orchestration, resume, circuit breaker
   pooling.py        bounded thread pool with a start-time watchdog
-  musicbrainz.py    fallback lookups
-  playlist.py       .m3u + Rekordbox XML
 ```
 
 ## Troubleshooting

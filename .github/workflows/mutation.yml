@@ -2,8 +2,8 @@ name: mutation
 
 on:
   schedule:
-    # Weekly, Monday 06:00 UTC. A full run takes ~1h on 4 vCPUs, so this
-    # stays off the per-push path by design.
+    # Weekly, Monday 06:00 UTC. A full run takes ~10 min on a GitHub runner,
+    # so timeout-minutes below is generous headroom, not an estimate.
     - cron: "0 6 * * 1"
   workflow_dispatch:
 
