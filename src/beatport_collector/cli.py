@@ -28,6 +28,7 @@ from beatport_collector.config import (
 )
 from beatport_collector.enrich import EnrichResult, EnrichStatus
 from beatport_collector.http_client import jittered_sleep
+from beatport_collector.paths import parse_allow_drives, path_allowed
 from beatport_collector.playlist import create_playlists
 from beatport_collector.scanner import create_catalog_db
 from beatport_collector.scanner import scan as run_scan
@@ -38,6 +39,10 @@ logger = logging.getLogger(__name__)
 
 MUSIC_DIR_HELP = "Directory containing music files"
 ART_OVERWRITE_HELP = "Also replace existing cover art"
+ALLOW_DRIVES_HELP = (
+    "Drives this command may write to (default: C). Named explicitly, so an "
+    "authorised run against G: cannot quietly become a standing permission"
+)
 
 
 def _progress_callback(page: int, total: int, count: int) -> None:
@@ -180,6 +185,34 @@ def _add_credentials(p: argparse.ArgumentParser) -> None:
     """Beatport login flags, shared by every networked subcommand."""
     p.add_argument("--username", type=str, default=None)
     p.add_argument("--password", type=str, default=None)
+
+
+def _add_allow_drives(p: argparse.ArgumentParser) -> None:
+    """Drive allow-list flag, shared by every subcommand that writes tags."""
+    p.add_argument("--allow-drives", type=str, default=None, help=ALLOW_DRIVES_HELP)
+
+
+def _guard_writes(paths: list[str], spec: str | None) -> list[str]:
+    """Drop paths off the allow-list, before anything is written.
+
+    Default is C: alone, so a run against G: has to name G: every time.
+    """
+    allow = parse_allow_drives(spec) or {"C"}
+    kept = [p for p in paths if path_allowed(p, allow)]
+    if len(kept) < len(paths):
+        _safe_print(
+            f"  BLOCKED {len(paths) - len(kept)} path(s): drive not in "
+            f"{sorted(allow)} (use --allow-drives to authorise one)"
+        )
+    return kept
+
+
+def _guard_manifest(
+    entries: list[dict[str, Any]], spec: str | None
+) -> list[dict[str, Any]]:
+    """Filter a batch manifest down to the paths the allow-list permits."""
+    allowed = set(_guard_writes([str(e.get("path", "")) for e in entries], spec))
+    return [e for e in entries if str(e.get("path", "")) in allowed]
 
 
 def run_scan_and_playlist(
@@ -444,6 +477,7 @@ def _enrich_parser(sub):
         default=2.0,
         help="Delay between catalog searches (rate-limit respect)",
     )
+    _add_allow_drives(p)
     _add_credentials(p)
     return p
 
@@ -505,6 +539,7 @@ def _batch_parser(sub):
         default=4,
         help="Parallel worker threads (up to 10; API stays polite via shared gate)",
     )
+    _add_allow_drives(p)
     _add_credentials(p)
     return p
 
@@ -545,6 +580,7 @@ def _apply_parser(sub):
         default=4,
         help="Parallel worker threads (up to 10)",
     )
+    _add_allow_drives(p)
     _add_credentials(p)
     return p
 
@@ -633,10 +669,11 @@ def handle_enrich(args: argparse.Namespace) -> None:
     username, password = args.username, args.password
     if not username or not password:
         username, password = _prompt_credentials()
+    paths = _guard_writes(args.paths, args.allow_drives) if args.apply else args.paths
     token = oauth_login(username, password)
     results = enrich_files(
         token.access_token,
-        args.paths,
+        paths,
         limit=args.limit,
         dry_run=not args.apply,
         overwrite=args.overwrite,
@@ -663,6 +700,8 @@ def handle_batch(args: argparse.Namespace) -> None:
     manifest = load_manifest(args.input_json)
     if args.limit:
         manifest = manifest[: args.limit]
+    if args.apply or args.apply_now:
+        manifest = _guard_manifest(manifest, args.allow_drives)
     token = _get_token(args)
     total = len(manifest)
     t0 = time.monotonic()
@@ -701,6 +740,7 @@ def handle_apply(args: argparse.Namespace) -> None:
     manifest = load_matched(args.match_jsonl)
     if args.limit:
         manifest = manifest[: args.limit]
+    manifest = _guard_manifest(manifest, args.allow_drives)
     token = _get_token(args)
     total = len(manifest)
     t0 = time.monotonic()
