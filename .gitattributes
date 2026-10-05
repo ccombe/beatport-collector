@@ -1,0 +1,17 @@
+# Line endings are normalised to LF in the repository and checked out as LF
+# everywhere.
+#
+# Without this, the two platforms disagree: a Windows checkout with
+# core.autocrlf=true produces CRLF working-tree files, while the WSL checkout of
+# the same commit stays LF. Editing from Windows and diffing from WSL then shows
+# every line as changed -- a 568-line change once measured as 2221 insertions.
+#
+# `eol=lf` (rather than plain `text=auto`) is deliberate: it pins the working
+# tree to LF on all platforms, so both sides see the same bytes and the
+# autocrlf setting stops mattering. Every tracked file here is text, so `auto`
+# never has to guess.
+* text=auto eol=lf
+
+# Lockfiles and version pins stay LF and are never rewritten by editors.
+uv.lock text eol=lf
+.python-version text eol=lf
