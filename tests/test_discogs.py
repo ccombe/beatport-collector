@@ -5,17 +5,63 @@ are the whole safety story here. All three were added after real data produced
 real false positives: 'Sweet Disposition' for a techno edit, 'Thunder Dome
 Sounds' (a label) for Dom & Roland, and an instrumental accepted for its own
 original because the two are the same length.
+
+Two kinds of test data, on purpose:
+
+``_release()`` and friends -- hand-written dicts for the edge cases a real
+response will never contain: absent ``styles``, an empty duration, no images.
+
+``tests/fixtures/discogs/*.json`` -- **golden fixtures captured from the real
+API**. The hand-written builders assert our belief about Discogs' response
+shape, so a field renamed upstream (``styles`` -> ``style``) breaks production
+while every one of them still passes. These fixtures are the API's own answer,
+so a rename has to be reconciled here in the open.
+
+To refresh them: ``GET /database/search?q=...`` and ``GET /releases/{id}`` with
+``Authorization: Discogs token=$DISCOGS_TOKEN``, run from the repo root so
+``load_dotenv(find_dotenv(usecwd=True))`` finds the token. Then project each
+response down to the keys the parser reads plus the nesting it reads them from
+(``_RELEASE_FIELDS`` / ``_RESULT_FIELDS`` below name the required ones) and
+commit the diff. Never commit a response verbatim -- drop ``community``
+(contributor accounts and vote counts), ``notes``, ``extraartists``,
+``companies``, ``data_quality``, the ``resource_url`` fields, and ``uri150``,
+leaving only what a parser assertion can actually fail on. Rate limit is
+25 req/min unauthenticated, 60 req/min with a token.
 """
 
 from __future__ import annotations
 
-from typing import ClassVar
+import json
+from pathlib import Path
+from typing import Any, ClassVar
 
 import pytest
 
 from beatport_collector import discogs
 
 TRACK_MS = 300_000
+
+FIXTURES = Path(__file__).parent / "fixtures" / "discogs"
+
+#: Top-level keys the parser reads off a release, and off a search result.
+#: Pinned by test against the captured fixtures: if Discogs renames one of
+#: these, that test goes red by name instead of the genre silently degrading.
+_RELEASE_FIELDS = (
+    "id",
+    "title",
+    "artists",
+    "labels",
+    "genres",
+    "styles",
+    "tracklist",
+    "released",
+    "images",
+)
+_RESULT_FIELDS = ("id", "type", "title")
+
+
+def _fixture(name: str) -> dict[str, Any]:
+    return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
 def _search_result(title: str, rid: int = 1) -> dict:
@@ -540,3 +586,156 @@ class TestToTrack:
         assert (t.name, t.release_name, t.publish_date) == ("T", "R", "2020")
         # MusicBrainz never supplies genre; it must not invent one.
         assert t.genre == ""
+
+
+class TestGoldenFixtures:
+    """The parser, run against responses captured from the real API.
+
+    Every other class here feeds it dicts this repo wrote, which assert our
+    belief about Discogs' response shape rather than the shape itself. A field
+    renamed upstream would pass all of them and quietly degrade production --
+    ``styles`` -> ``style`` turns every match's genre into the umbrella
+    ``Electronic`` with nothing red anywhere. So these assert against the
+    captured bytes, and ``test_captured_release_has_every_field_the_parser_reads``
+    pins the names so a rename is a name-level failure, not a behaviour drift.
+
+    The hand-written tests stay: they cover the absences (no ``styles``, no
+    duration, no images) that a healthy real response will never contain.
+    """
+
+    def test_captured_release_has_every_field_the_parser_reads(self) -> None:
+        """By name, so an upstream rename cannot pass unnoticed."""
+        for name in ("release_70822.json", "release_1338944.json"):
+            release = _fixture(name)
+            missing = [field for field in _RELEASE_FIELDS if field not in release]
+            assert missing == [], f"{name} is missing {missing}"
+
+    def test_captured_search_results_have_every_field_the_gates_read(self) -> None:
+        for result in _fixture("search_kerri_chandler.json")["results"]:
+            missing = [field for field in _RESULT_FIELDS if field not in result]
+            assert missing == [], f"result {result.get('id')} is missing {missing}"
+
+    def test_style_beats_the_umbrella_genre_on_a_real_release(self) -> None:
+        """The exact rename scenario, asserted against the API's own answer.
+
+        Read as ``styles[0]`` this is 'House'; a parser reading ``style`` sees
+        nothing there and falls back to the umbrella 'Electronic' -- a match
+        that looks plausible and is wrong. Pins both the key and the
+        non-degenerate result.
+        """
+        release = _fixture("release_70822.json")
+        assert discogs._genre_of(release) == release["styles"][0] == "House"
+        assert discogs._genre_of(release) != release["genres"][0] == "Electronic"
+
+    def test_the_style_rename_is_visible_not_silent(self) -> None:
+        """What the upstream rename actually does, so the stakes are on record."""
+        release = _fixture("release_70822.json")
+        renamed = {**release, "style": release["styles"]}
+        del renamed["styles"]
+        assert discogs._genre_of(release) == "House"  # as documented
+        assert discogs._genre_of(renamed) == "Electronic"  # renamed upstream
+        # Search results use the singular 'style' for the same concept while the
+        # release uses 'styles'. That inconsistency upstream is why a rename is
+        # plausible rather than far-fetched -- and why the two are pinned apart.
+        releases = [
+            r
+            for r in _fixture("search_kerri_chandler.json")["results"]
+            if r["type"] == "release"
+        ]
+        assert releases and all("style" in r and "styles" not in r for r in releases)
+
+    def test_genre_from_a_real_release_is_its_first_style(self) -> None:
+        release = _fixture("release_1338944.json")
+        assert discogs._genre_of(release) == "House"
+
+    def test_artwork_is_the_real_signed_primary_uri(self) -> None:
+        release = _fixture("release_70822.json")
+        assert discogs._artwork_of(release) == release["images"][0]["uri"]
+        assert discogs._artwork_of(release).startswith("https://i.discogs.com/")
+
+    def test_real_release_with_no_primary_image_yields_no_artwork(self) -> None:
+        """Both images are 'secondary' upstream -- not an imagined edge case."""
+        release = _fixture("release_1338944.json")
+        assert {i["type"] for i in release["images"]} == {"secondary"}
+        assert discogs._artwork_of(release) == ""
+
+    def test_tracklist_durations_from_a_real_release(self) -> None:
+        """Real 'M:SS' strings, including the compilation's 6:53 filler entry."""
+        release = _fixture("release_70822.json")
+        lengths = discogs._tracklist_ms(release)
+        assert len(lengths) == len(release["tracklist"])
+        assert 445_000 in lengths  # '7:25'
+        assert 413_000 in lengths  # '6:53', a literally-titled filler track
+        assert all(ms > 0 for ms in lengths)
+
+    def test_real_release_with_a_blank_duration_lists_no_lengths(self) -> None:
+        """Genuinely happens: this release lists '7:25' nowhere, only ''."""
+        release = _fixture("release_1338944.json")
+        assert discogs._tracklist_ms(release) == []
+        assert discogs._length_gate(release, 300_000, 10_000) is False
+
+    def test_length_gate_against_real_tracklist_lengths(self) -> None:
+        release = _fixture("release_70822.json")
+        assert discogs._length_gate(release, 445_000, 10_000) is True
+        assert discogs._length_gate(release, 427_000, 10_000) is True  # '7:07'
+        assert discogs._length_gate(release, 999_000, 10_000) is False
+
+    def test_gates_read_the_real_search_result_and_release(self) -> None:
+        """End to end over captured bytes: the release found for this query."""
+        result = next(
+            r
+            for r in _fixture("search_kerri_chandler.json")["results"]
+            if r["id"] == 70822
+        )
+        release = _fixture("release_70822.json")
+        assert discogs._artist_gate(result, "Kerri Chandler") is True
+        # The result title is the compilation name, so the tracklist decides.
+        assert discogs._title_gate(result, "Glory To God", release) is True
+        assert discogs._title_gate(result, "Sweet Disposition", release) is False
+        assert discogs._length_gate(release, 427_000, 10_000) is True
+
+    def test_search_release_end_to_end_on_captured_responses(self, monkeypatch) -> None:
+        """The whole chain, on the real search payload and the real release."""
+        search = _fixture("search_kerri_chandler.json")
+
+        def fake_get(url: str, max_retries: int = 3) -> dict:
+            if "database/search" in url:
+                return search
+            return _fixture("release_70822.json")
+
+        monkeypatch.setattr(discogs, "_polite_get", fake_get)
+        monkeypatch.setenv(discogs.TOKEN_ENV, "test-token")
+        match = discogs.search_release("Kerri Chandler", "Glory To God", 427_000)
+        assert match is not None
+        assert match.release_id == 70822
+        assert match.artist == "Kerri Chandler"
+        assert match.release == "Kaoz Theory (The Essential Kerri Chandler)"
+        # Upstream sends a bare year for a vinyl with no date; keep it verbatim.
+        assert match.date == "1998"
+        assert match.label == "Harmless"
+        assert match.genre == "House"  # the style, not 'Electronic'
+        assert match.artwork_url == _fixture("release_70822.json")["images"][0]["uri"]
+
+    def test_real_search_payload_skips_artist_and_master_results(self) -> None:
+        """The captured results really do contain non-release types first."""
+        search = _fixture("search_kerri_chandler.json")
+        assert search["results"][0]["type"] == "artist"
+        assert {r["type"] for r in search["results"]} == {"artist", "master", "release"}
+
+    def test_real_release_rejected_for_a_title_it_does_not_contain(
+        self, monkeypatch
+    ) -> None:
+        """Gate 2 on a real compilation: the track is simply not on it."""
+        search = _fixture("search_kerri_chandler.json")
+
+        def fake_get(url: str, max_retries: int = 3) -> dict:
+            if "database/search" in url:
+                return search
+            return _fixture("release_70822.json")
+
+        monkeypatch.setattr(discogs, "_polite_get", fake_get)
+        monkeypatch.setenv(discogs.TOKEN_ENV, "test-token")
+        assert (
+            discogs.search_release("Kerri Chandler", "Sweet Disposition", 427_000)
+            is None
+        )

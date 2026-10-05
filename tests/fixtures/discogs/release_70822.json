@@ -1,0 +1,281 @@
+{
+  "id": 70822,
+  "title": "Kaoz Theory (The Essential Kerri Chandler)",
+  "artists_sort": "Kerri Chandler",
+  "released": "1998",
+  "released_formatted": "1998",
+  "year": 1998,
+  "country": "UK",
+  "genres": [
+    "Electronic"
+  ],
+  "styles": [
+    "House",
+    "Deep House",
+    "Garage House"
+  ],
+  "status": "Accepted",
+  "master_id": 130363,
+  "formats": [
+    {
+      "name": "Vinyl",
+      "qty": "3",
+      "descriptions": [
+        "12\"",
+        "Compilation"
+      ]
+    }
+  ],
+  "artists": [
+    {
+      "id": 59,
+      "name": "Kerri Chandler",
+      "anv": "",
+      "join": "",
+      "role": "",
+      "tracks": ""
+    }
+  ],
+  "labels": [
+    {
+      "id": 1030,
+      "name": "Harmless",
+      "catno": "HURTLP010",
+      "entity_type_name": "Label"
+    }
+  ],
+  "tracklist": [
+    {
+      "position": "A1",
+      "type_": "track",
+      "title": "Drink On Me (Club Version)",
+      "duration": "7:25",
+      "artists": [
+        {
+          "id": 458446,
+          "name": "Teulé",
+          "anv": "Teule",
+          "join": "",
+          "role": "",
+          "tracks": ""
+        }
+      ]
+    },
+    {
+      "position": "A2",
+      "type_": "track",
+      "title": "Inspiration (Original Mix)",
+      "duration": "6:12",
+      "artists": [
+        {
+          "id": 59,
+          "name": "Kerri Chandler",
+          "anv": "Kerri 'Kaoz 6:23' Chandler",
+          "join": "Presents",
+          "role": "",
+          "tracks": ""
+        },
+        {
+          "id": 13195,
+          "name": "Arnold Jarvis",
+          "anv": "",
+          "join": "",
+          "role": "",
+          "tracks": ""
+        }
+      ]
+    },
+    {
+      "position": "B1",
+      "type_": "track",
+      "title": "The Way I Feel (4 Daye Club Mix)",
+      "duration": "5:41",
+      "artists": [
+        {
+          "id": 28500,
+          "name": "Tears Of Velva",
+          "anv": "",
+          "join": "",
+          "role": "",
+          "tracks": ""
+        }
+      ]
+    },
+    {
+      "position": "B2",
+      "type_": "track",
+      "title": "Get It Off (Underground Mix)",
+      "duration": "6:03",
+      "artists": [
+        {
+          "id": 344270,
+          "name": "Three Generations",
+          "anv": "",
+          "join": "Featuring",
+          "role": "",
+          "tracks": ""
+        },
+        {
+          "id": 28503,
+          "name": "Chevelle",
+          "anv": "Chevell",
+          "join": "",
+          "role": "",
+          "tracks": ""
+        }
+      ]
+    },
+    {
+      "position": "C1",
+      "type_": "track",
+      "title": "Glory To God",
+      "duration": "7:07",
+      "artists": [
+        {
+          "id": 59,
+          "name": "Kerri Chandler",
+          "anv": "Kerri 'Kaoz 6:23' Chandler",
+          "join": "",
+          "role": "",
+          "tracks": ""
+        }
+      ]
+    },
+    {
+      "position": "C2",
+      "type_": "track",
+      "title": "Track 1",
+      "duration": "6:53",
+      "artists": [
+        {
+          "id": 59,
+          "name": "Kerri Chandler",
+          "anv": "Kerri 'Kaoz 6:23' Chandler",
+          "join": "",
+          "role": "",
+          "tracks": ""
+        }
+      ]
+    },
+    {
+      "position": "D1",
+      "type_": "track",
+      "title": "The Shelter (Shelter Vox Mix)",
+      "duration": "6:32",
+      "artists": [
+        {
+          "id": 13140,
+          "name": "Gate-Ah",
+          "anv": "",
+          "join": "Featuring",
+          "role": "",
+          "tracks": ""
+        },
+        {
+          "id": 33567,
+          "name": "Christopher McCray",
+          "anv": "Chris McCray",
+          "join": "",
+          "role": "",
+          "tracks": ""
+        }
+      ]
+    },
+    {
+      "position": "D2",
+      "type_": "track",
+      "title": "It's The Music (King Street Club Mix)",
+      "duration": "6:21",
+      "artists": [
+        {
+          "id": 14105,
+          "name": "Bassmental",
+          "anv": "",
+          "join": "Featuring",
+          "role": "",
+          "tracks": ""
+        },
+        {
+          "id": 49358,
+          "name": "Charles McDougald",
+          "anv": "Charles MacDougald",
+          "join": "",
+          "role": "",
+          "tracks": ""
+        }
+      ]
+    },
+    {
+      "position": "E1",
+      "type_": "track",
+      "title": "Deeper (Kaoz 6:23 House Mix)",
+      "duration": "5:03",
+      "artists": [
+        {
+          "id": 28504,
+          "name": "Susan Clark",
+          "anv": "",
+          "join": "",
+          "role": "",
+          "tracks": ""
+        }
+      ]
+    },
+    {
+      "position": "E2",
+      "type_": "track",
+      "title": "See Line Woman (Vocal Mix)",
+      "duration": "7:23",
+      "artists": [
+        {
+          "id": 13784,
+          "name": "The Songstress",
+          "anv": "",
+          "join": "",
+          "role": "",
+          "tracks": ""
+        }
+      ]
+    },
+    {
+      "position": "F1",
+      "type_": "track",
+      "title": "Ladbroke Grove",
+      "duration": "6:50",
+      "artists": [
+        {
+          "id": 59,
+          "name": "Kerri Chandler",
+          "anv": "",
+          "join": "",
+          "role": "",
+          "tracks": ""
+        }
+      ]
+    },
+    {
+      "position": "F2",
+      "type_": "track",
+      "title": "Lagos Jump (Alto Dub)",
+      "duration": "8:36",
+      "artists": [
+        {
+          "id": 1508,
+          "name": "Afro Elements",
+          "anv": "",
+          "join": "",
+          "role": "",
+          "tracks": ""
+        }
+      ]
+    }
+  ],
+  "images": [
+    {
+      "type": "primary",
+      "uri": "https://i.discogs.com/cyleSqPSHE6f1QoAx3JBHcsiJmr48XSWq_y7p_nSLH4/rs:fit/g:sm/q:90/h:200/w:200/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTcwODIy/LTAwMS5qcGc.jpeg",
+      "width": 200,
+      "height": 200
+    }
+  ]
+}

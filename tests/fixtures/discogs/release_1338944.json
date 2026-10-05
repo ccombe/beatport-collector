@@ -1,0 +1,70 @@
+{
+  "id": 1338944,
+  "title": "Tsiy (Kerri Chandler Instrumental)",
+  "artists_sort": "Risksoundsystem",
+  "released": "2008-05-00",
+  "released_formatted": "May 2008",
+  "year": 2008,
+  "country": null,
+  "genres": [
+    "Electronic"
+  ],
+  "styles": [
+    "House",
+    "Deep House"
+  ],
+  "status": "Accepted",
+  "master_id": 719050,
+  "formats": [
+    {
+      "name": "Vinyl",
+      "qty": "1",
+      "descriptions": [
+        "12\"",
+        "45 RPM",
+        "Single Sided",
+        "White Label"
+      ]
+    }
+  ],
+  "artists": [
+    {
+      "id": 1092416,
+      "name": "Risksoundsystem",
+      "anv": "",
+      "join": "",
+      "role": "",
+      "tracks": ""
+    }
+  ],
+  "labels": [
+    {
+      "id": 1818,
+      "name": "Not On Label",
+      "catno": "KERRI 001",
+      "entity_type_name": "Label"
+    }
+  ],
+  "tracklist": [
+    {
+      "position": "A",
+      "type_": "track",
+      "title": "Tsiy (Kerri Chandler Instrumental)",
+      "duration": ""
+    }
+  ],
+  "images": [
+    {
+      "type": "secondary",
+      "uri": "https://i.discogs.com/d4QKakyDo3R_YvGoBfALSKSiVJtMIo4WYXjhr_lJ8kU/rs:fit/g:sm/q:90/h:551/w:550/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMzg5/NDQtMTIxMDkzNTE5/MS5qcGVn.jpeg",
+      "width": 550,
+      "height": 551
+    },
+    {
+      "type": "secondary",
+      "uri": "https://i.discogs.com/Fq-L0U1SROcYSBvzZRHlVed15TBUBNesGR_QHnR4dEk/rs:fit/g:sm/q:90/h:556/w:550/czM6Ly9kaXNjb2dz/LWRhdGFiYXNlLWlt/YWdlcy9SLTEzMzg5/NDQtMTIxMDkzNTIy/OS5qcGVn.jpeg",
+      "width": 550,
+      "height": 556
+    }
+  ]
+}
