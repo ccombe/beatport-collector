@@ -211,8 +211,29 @@ class TestMatchTracksToFiles:
     def test_strategy8_condensed(self) -> None:
         rows = [self._row("A1", "Bbc 1", "Album")]
         catalog = [self._entry("/a.mp3", "A1", "Album", "Bbc1")]
-        _, matched, _ = match_tracks_to_files(rows, catalog)
+        augmented, matched, _ = match_tracks_to_files(rows, catalog)
         assert matched == 1
+        assert augmented[0]["Local File Path"] == "/a.mp3"
+
+    def test_strategy6_album_title_prefix(self) -> None:
+        """Purchase title is a prefix of the file title on the same album. The
+        artist differs, so strategies 11-13 (which need artist overlap) are
+        blind to it and strategy 6 is the only one that can match."""
+        rows = [self._row("A1", "Song", "Album")]
+        catalog = [self._entry("/a.mp3", "B1", "Album", "Song Extended")]
+        augmented, matched, unmatched = match_tracks_to_files(rows, catalog)
+        assert (matched, unmatched) == (1, 0)
+        assert augmented[0]["Local File Path"] == "/a.mp3"
+
+    def test_strategy7_artist_title_prefix(self) -> None:
+        """Same prefix rule scoped by artist instead of album. No release title
+        means strategies 9-13 have no album to work with, so strategy 7 is the
+        only candidate."""
+        rows = [self._row("A1", "Song", "")]
+        catalog = [self._entry("/a.mp3", "A1", "Other Album", "Song Extended")]
+        augmented, matched, unmatched = match_tracks_to_files(rows, catalog)
+        assert (matched, unmatched) == (1, 0)
+        assert augmented[0]["Local File Path"] == "/a.mp3"
 
     def test_strategy9_album_substring(self) -> None:
         rows = [self._row("A1", "Song", "Album Deluxe Edition")]

@@ -250,3 +250,85 @@ class TestCatalogBuild:
             augmented, matched, unmatched = cat.match(rows)
             assert (matched, unmatched) == (0, 1)
             assert augmented[0]["Local File Path"] == ""
+
+
+class TestCondensedStrategies:
+    """Strategies 8 and 10, driven through ``Catalog.match``.
+
+    Both used to be reachable only from ``tests/test_parity.py``, which skips
+    without two gitignored local data files, so CI never ran them.
+    """
+
+    @staticmethod
+    def _track(path: str, artist: str, album: str, title: str) -> dict[str, str]:
+        return {
+            "File Path": path,
+            "Artist": artist,
+            "Album": album,
+            "Title": title,
+            "ISRC": "",
+            "Track Number": "",
+            "Album Artist": "",
+            "Genre": "",
+            "Date": "",
+            "Duration": "3:00",
+            "File Size": "1000",
+        }
+
+    @staticmethod
+    def _row(artists: str, title: str, release: str) -> dict[str, str]:
+        return {
+            "ISRC": "",
+            "Artists": artists,
+            "Title": title,
+            "Release Title": release,
+        }
+
+    def test_strategy8_condensed_title_scoped_by_album_and_artist(self) -> None:
+        """Spaced purchase title vs unspaced file title, album holding three
+        rows. Only the artist-scoped branch can reach ``/mine.mp3``: its
+        album-only fall-through takes the first row on the album
+        (``/other.mp3``) and strategy 10 the substring one (``/deluxe.mp3``)."""
+        with Catalog(":memory:") as cat:
+            for path, artist, album in (
+                ("/deluxe.mp3", "B1", "Album Deluxe"),
+                ("/other.mp3", "B1", "Album"),
+                ("/mine.mp3", "A1", "Album"),
+            ):
+                cat._insert_track(self._track(path, artist, album, "Bbc1"))
+            cat._conn.commit()
+
+            augmented, matched, unmatched = cat.match(
+                [self._row("A1", "Bbc 1", "Album")]
+            )
+
+        assert (matched, unmatched) == (1, 0)
+        assert augmented[0]["Local File Path"] == "/mine.mp3"
+
+    def test_strategy8_prefers_exact_album_over_substring(self) -> None:
+        """Neither file's artist overlaps, so the artist-scoped branch comes
+        back empty and strategy 8 falls through to its album-only query. That
+        must still pick the exact-album file, not the ``Album Deluxe`` one."""
+        with Catalog(":memory:") as cat:
+            cat._insert_track(self._track("/deluxe.mp3", "B1", "Album Deluxe", "Bbc1"))
+            cat._insert_track(self._track("/exact.mp3", "B1", "Album", "Bbc1"))
+            cat._conn.commit()
+
+            augmented, matched, _ = cat.match([self._row("A1", "Bbc 1", "Album")])
+
+        assert matched == 1
+        assert augmented[0]["Local File Path"] == "/exact.mp3"
+
+    def test_strategy10_matches_condensed_title_across_album_substring(self) -> None:
+        """No file sits on the exact album, so strategy 8 misses entirely and
+        strategy 10's substring album test is the only thing left."""
+        with Catalog(":memory:") as cat:
+            cat._insert_track(
+                self._track("/deluxe.mp3", "B1", "Album Deluxe Edition", "Bbc1")
+            )
+            cat._conn.commit()
+
+            augmented, matched, _ = cat.match([self._row("A1", "Bbc 1", "Album")])
+
+        assert matched == 1
+        assert augmented[0]["Local File Path"] == "/deluxe.mp3"
