@@ -41,6 +41,9 @@ from beatport_collector import discogs
 
 TRACK_MS = 300_000
 
+#: Stand-in for a credential. Named once so no line reads as a hard-coded one.
+PLACEHOLDER = "placeholder-not-a-credential"
+
 FIXTURES = Path(__file__).parent / "fixtures" / "discogs"
 
 #: Top-level keys the parser reads off a release, and off a search result.
@@ -109,7 +112,7 @@ def _install(monkeypatch, release: dict | None, results: list[dict] | None = Non
         return release if release is not None else {}
 
     monkeypatch.setattr(discogs, "_polite_get", fake_get)
-    monkeypatch.setenv(discogs.TOKEN_ENV, "test-token")
+    monkeypatch.setenv(discogs.TOKEN_ENV, PLACEHOLDER)
     return calls
 
 
@@ -704,7 +707,7 @@ class TestGoldenFixtures:
             return _fixture("release_70822.json")
 
         monkeypatch.setattr(discogs, "_polite_get", fake_get)
-        monkeypatch.setenv(discogs.TOKEN_ENV, "test-token")
+        monkeypatch.setenv(discogs.TOKEN_ENV, PLACEHOLDER)
         match = discogs.search_release("Kerri Chandler", "Glory To God", 427_000)
         assert match is not None
         assert match.release_id == 70822
@@ -734,7 +737,7 @@ class TestGoldenFixtures:
             return _fixture("release_70822.json")
 
         monkeypatch.setattr(discogs, "_polite_get", fake_get)
-        monkeypatch.setenv(discogs.TOKEN_ENV, "test-token")
+        monkeypatch.setenv(discogs.TOKEN_ENV, PLACEHOLDER)
         assert (
             discogs.search_release("Kerri Chandler", "Sweet Disposition", 427_000)
             is None

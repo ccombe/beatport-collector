@@ -220,10 +220,13 @@ def test_non_str_token_fails_before_the_network(monkeypatch):
         raise AssertionError("client.get ran before the token was validated")
 
     monkeypatch.setattr(http_client.requests, "get", boom)
+    # A placeholder, not a credential: the assertion below is that this string
+    # never reaches the error message.
+    placeholder = "not-a-real-token"
     with pytest.raises(TypeError) as exc:
-        BeatportClient(token=BeatportToken(access_token="secret-value"))  # type: ignore
+        BeatportClient(token=BeatportToken(access_token=placeholder))  # type: ignore
     assert "token must be str, got BeatportToken" in str(exc.value)
-    assert "secret-value" not in str(exc.value)
+    assert placeholder not in str(exc.value)
 
 
 def test_str_token_still_authenticates(monkeypatch):
