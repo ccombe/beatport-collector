@@ -796,3 +796,45 @@ class TestMultiArtistEscalation:
         # No duration to judge by, so the first non-empty result stands.
         assert [c.id for c in cands] == [10]
         assert len(calls) == 1
+
+    def test_featuring_suffix_earns_a_stripped_query(self, monkeypatch) -> None:
+        """'(feat. X)' is an artist, not part of the track name.
+
+        Beatport will not match the featured act inside the title either, so the
+        escalation retries with it removed.
+        """
+        from beatport_collector.catalog_api import CatalogTrack
+
+        right = CatalogTrack(id=11, name="Ocean", artists="Solomun", length_ms=300_000)
+        calls = self._fake_search(monkeypatch, {("Solomun", "Ocean"): [right]})
+        cands = enrich._search_candidates(
+            "tok",
+            "Solomun",
+            "Ocean (feat. Jamie Foxx)",
+            "Ocean (feat. Jamie Foxx)",
+            "",
+            0,
+            300_000,
+        )
+        assert [c.id for c in cands] == [11]
+        assert self._saw(calls, "Solomun", "Ocean")
+
+    def test_loose_query_without_a_duration_gates_on_title_only(
+        self, monkeypatch
+    ) -> None:
+        """No file length to compare, so the loose path must still gate on title.
+
+        Also the only route to within_duration's no-duration branch.
+        """
+        from beatport_collector.catalog_api import CatalogTrack
+
+        good = CatalogTrack(id=12, name="La 42", artists="A", length_ms=999_000)
+        calls = self._fake_search(
+            monkeypatch,
+            {("Mrodriguez", "La 42"): [good], ("Ian Justiniani", "La 42"): [good]},
+        )
+        cands = enrich._search_candidates(
+            "tok", "Mrodriguez & Ian Justiniani", "La 42", "La 42", "", 0
+        )
+        assert [c.id for c in cands] == [12]
+        assert self._saw(calls, "Mrodriguez", "La 42")
