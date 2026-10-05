@@ -45,6 +45,59 @@ Copy `.env.example` to `.env` and fill in your Beatport username and password:
 cp .env.example .env
 ```
 
+### Credentials
+
+Only the Beatport login is required. Everything else is optional, and **a source
+without a credential is skipped, not failed** — the tool behaves exactly as if
+that source did not exist, so there is nothing to configure if you do not want
+it.
+
+| Variable | Required | What it buys you |
+|---|---|---|
+| `BP_USERNAME` / `BP_PASSWORD` | **yes** | Beatport catalog search, purchase export, enrichment |
+| `DISCOGS_TOKEN` | no | Second fallback for tracks Beatport does not carry |
+
+**Beatport** — your normal [beatport.com](https://beatport.com) login. Used for
+the purchase export and for every catalog lookup.
+
+**Discogs** (optional) — a free personal access token:
+
+1. Sign in at [discogs.com](https://www.discogs.com) (a free account is enough)
+2. Open [Developer Settings](https://www.discogs.com/settings/developers)
+3. Click **Generate token** and copy it into `.env` as `DISCOGS_TOKEN`
+
+It raises Discogs' limit from 25 to 60 requests/minute and is what lets the
+tool fall back to Discogs when Beatport has nothing. Discogs is also the only
+source here that can supply **genre** for those tracks. Nothing is written to
+Discogs; it is read-only.
+
+```bash
+# .env
+BP_USERNAME=you@example.com
+BP_PASSWORD=...
+DISCOGS_TOKEN=                       # optional, leave blank to skip Discogs
+```
+
+Without a token, enrichment still runs and simply tries fewer sources — you lose
+Discogs-sourced genre/date/album on hard tracks, nothing else.
+
+### Where tags come from, in order
+
+Each file is offered to each source until one places it. The first source with a
+confident match wins, so earlier rows are preferred:
+
+1. **Beatport** — genre, date, album, BPM, key, label, ISRC, cover art
+2. **MusicBrainz** — no key needed. Release, date, label only; never genre,
+   because its genre data is too sparsely populated to trust
+3. **Discogs** — needs `DISCOGS_TOKEN`. Adds genre and cover art for tracks
+   Beatport delists or never carried
+
+Sources 2 and 3 are fallbacks for the tracks Beatport does not have, which in a
+real library is a stubborn few percent: delisted releases, bootleg reuploads, and
+tracks that only ever existed as a SoundCloud upload. Those often cannot be
+placed by any source and are reported as `no-match` — that is a real answer, not
+a bug, and retrying will not change it.
+
 ### Windows and WSL from one checkout
 
 Each side keeps its own virtualenv so they never clobber each other:
@@ -243,6 +296,19 @@ Beatport publishes no numeric limits; their developer agreement governs. Treat
 MusicBrainz is used as a fallback when Beatport has nothing (release, date and
 label only — never genre/BPM/key), and is separately rate-limited to 1 req/s.
 
+Discogs, when `DISCOGS_TOKEN` is set, is tried after MusicBrainz for whatever is
+still missing. Their limit is 60 requests/minute — a moving average over 60
+seconds, per source IP — and is paced to match, with backoff on `429`. A
+descriptive `User-Agent` is mandatory there; generic agents are blocked.
+
+Discogs matches pass three gates: artist agreement, title equality after
+cleaning, and the file's audio length against the release tracklist. All three
+exist because a looser search returned real wrong answers — an indie rock track
+for a techno edit, a record *label* for an artist, and an instrumental accepted
+for its own original. Genres are only taken from releases Discogs files as
+`Electronic`, because Discogs describes the physical release and a digital track
+can inherit the genre of the vinyl it appeared on.
+
 ## Development
 
 ```bash
@@ -333,7 +399,8 @@ src/beatport_collector/
   api.py            purchase-history paging and CSV export
   http_client.py    all transport: auth header, gap gate, backoff, deadline
   catalog_api.py    catalog search + track details
-  musicbrainz.py    fallback lookups when Beatport has nothing
+  musicbrainz.py    fallback lookups when Beatport has nothing (no key)
+  discogs.py       second fallback, adds genre (needs DISCOGS_TOKEN)
   matching.py       pure text normalisation + the purchase-row query model
   catalog.py        SQLite catalog, tag reading, the strategies in SQL
   scanner.py        in-memory index, the same strategies in Python, scan CLI

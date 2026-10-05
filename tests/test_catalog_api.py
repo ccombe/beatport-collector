@@ -133,3 +133,129 @@ def test_sleep_helpers_delegate(monkeypatch) -> None:
     assert seen == [(2.0,)]
     monkeypatch.setattr(BeatportClient, "get", lambda self, url: {"ok": True})
     assert api_mod._get_with_backoff("u", "t") == {"ok": True}
+
+
+class TestTitleGate:
+    """pick_best's optional title gate, used for loose multi-artist queries.
+
+    Duration alone is not enough there: unrelated tracks land within 7s often
+    enough that a same-length track by a different artist would otherwise be
+    written as a confident match.
+    """
+
+    def test_rejects_same_length_wrong_title(self) -> None:
+        from beatport_collector.catalog_api import CatalogTrack
+
+        wrong = CatalogTrack(id=1, name="Felt Tip", artists="Decius", length_ms=200_000)
+        best, reason = api_mod.pick_best(
+            [wrong], duration_ms=200_000, title="Decius, Lias Saoudi"
+        )
+        assert best is None
+        assert reason == "ambiguous"
+
+    def test_accepts_matching_title_with_mix_suffix(self) -> None:
+        from beatport_collector.catalog_api import CatalogTrack
+
+        ok = CatalogTrack(
+            id=2, name="La 42 (Original Mix)", artists="X", length_ms=200_000
+        )
+        best, reason = api_mod.pick_best([ok], duration_ms=200_000, title="La 42")
+        assert reason == "match"
+        assert best is not None
+        assert best.id == 2
+
+    def test_containment_either_way(self) -> None:
+        from beatport_collector.catalog_api import CatalogTrack
+
+        # A mix name in either field must not veto the match.
+        ok = CatalogTrack(id=3, name="Moving In", artists="X", length_ms=200_000)
+        best, _ = api_mod.pick_best([ok], duration_ms=200_000, title="Moving In (Dub)")
+        assert best is not None
+        assert best.id == 3
+
+    def test_gate_omitted_keeps_duration_only_behaviour(self) -> None:
+        from beatport_collector.catalog_api import CatalogTrack
+
+        wrong = CatalogTrack(
+            id=4, name="Something Else", artists="Y", length_ms=200_000
+        )
+        best, reason = api_mod.pick_best([wrong], duration_ms=200_000)
+        assert reason == "match"
+        assert best is not None
+        assert best.id == 4
+
+    def test_empty_title_means_no_gate(self) -> None:
+        # "" is how a caller says "no title gate", not "match nothing".
+        from beatport_collector.catalog_api import CatalogTrack
+
+        t = CatalogTrack(id=5, name="Anything", artists="Z", length_ms=200_000)
+        best, reason = api_mod.pick_best([t], duration_ms=200_000, title="")
+        assert reason == "match"
+        assert best is not None
+        assert best.id == 5
+
+
+class TestMixGate:
+    """An instrumental/vocal is the same length as the original, so duration
+    cannot reject it. Found for real: 'Feel Good Inc.' matched the
+    'Instrumental' off a loose multi-artist query."""
+
+    def test_rejects_stem_when_none_asked_for(self) -> None:
+        from beatport_collector.catalog_api import CatalogTrack
+
+        stem = CatalogTrack(
+            id=1, name="Feel Good Inc.", mix_name="Instrumental", length_ms=222_000
+        )
+        best, reason = api_mod.pick_best(
+            [stem], duration_ms=222_000, title="Feel Good Inc."
+        )
+        assert best is None
+        assert reason == "ambiguous"
+
+    def test_accepts_stem_when_the_file_asks_for_it(self) -> None:
+        from beatport_collector.catalog_api import CatalogTrack
+
+        stem = CatalogTrack(
+            id=2, name="Feel Good Inc.", mix_name="Instrumental", length_ms=222_000
+        )
+        best, reason = api_mod.pick_best(
+            [stem], duration_ms=222_000, title="Feel Good Inc. (Instrumental)"
+        )
+        assert reason == "match"
+        assert best is not None
+        assert best.id == 2
+
+    def test_rejects_a_different_named_remix(self) -> None:
+        from beatport_collector.catalog_api import CatalogTrack
+
+        other = CatalogTrack(
+            id=3, name="Shiver", mix_name="Extended Remix", length_ms=300_000
+        )
+        best, _ = api_mod.pick_best(
+            [other], duration_ms=300_000, title="Shiver (Cassian Extended Remix)"
+        )
+        assert best is None
+
+    def test_accepts_the_remix_the_file_names(self) -> None:
+        from beatport_collector.catalog_api import CatalogTrack
+
+        right = CatalogTrack(
+            id=4, name="Shiver", mix_name="Cassian Extended Remix", length_ms=300_000
+        )
+        best, _ = api_mod.pick_best(
+            [right], duration_ms=300_000, title="Shiver (Cassian Extended Remix)"
+        )
+        assert best is not None
+        assert best.id == 4
+
+    def test_nameless_mix_still_passes(self) -> None:
+        from beatport_collector.catalog_api import CatalogTrack
+
+        t = CatalogTrack(
+            id=5, name="Do It Like Me", mix_name="Original Mix", length_ms=300_000
+        )
+        best, reason = api_mod.pick_best(
+            [t], duration_ms=300_000, title="Do It Like Me"
+        )
+        assert reason == "match"
+        assert best is not None

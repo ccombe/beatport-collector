@@ -18,6 +18,7 @@ backoff on 429/5xx (max 5 retries).
 from __future__ import annotations
 
 import logging
+import re
 import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any
@@ -236,10 +237,90 @@ def pick_oldest(tracks: list[CatalogTrack]) -> CatalogTrack | None:
 DURATION_TOLERANCE_MS = 7000
 
 
+#: Mixes that are the *same recording*, not a different one: an instrumental
+#: or a vocal is byte-for-byte the track's length, so the duration gate cannot
+#: tell them apart. Only reachable through a loose query, where the title gate
+#: would otherwise wave them through.
+#: 'a\s?capella' covers both spellings; listing 'acapella' beside it was a
+#: redundant alternative (S5855).
+STEM_MIX_RE = re.compile(
+    r"\b(instrumental|vocal|a\s?capella|stem|dub)\b", re.IGNORECASE
+)
+
+
+def _title_agrees(query: str, candidate: str, mix_name: str = "") -> bool:
+    """Do a query title and a catalog track refer to the same recording?
+
+    Containment either way on the cleaned base name, so 'la 42' matches
+    'La 42' and 'moving in' matches 'Moving In'.
+
+    The mix is compared separately because clean_title *discards* it: comparing
+    a catalog mix against a cleaned title proves nothing, since it reduces
+    'Extended Remix' to '' and '' is contained in everything. So the mix the
+    query states is read with :func:`declared_mix` and matched against the
+    catalog's own mix field.
+
+    That matters because a stem is the same length as the original, so the
+    duration gate cannot tell 'Feel Good Inc.' from 'Feel Good Inc.
+    (Instrumental)' — found for real, both within tolerance.
+    """
+    from beatport_collector.matching import clean_title, declared_mix, normalize
+
+    q, c = normalize(clean_title(query or "")), normalize(clean_title(candidate or ""))
+    if not q or not c or not (q == c or q in c or c in q):
+        return False
+    if not mix_name:
+        return True
+    want = declared_mix(query or "")
+    if STEM_MIX_RE.search(mix_name) and not want:
+        return False  # a stem was offered for a track that asked for no mix
+    # A different named remix than the file states.
+    return not want or normalize(want) == normalize(mix_name)
+
+
+def within_duration(
+    tracks: list[CatalogTrack],
+    duration_ms: int | None,
+    tolerance_ms: int = DURATION_TOLERANCE_MS,
+) -> list[CatalogTrack]:
+    """Candidates whose length is within tolerance of the file's.
+
+    No *duration_ms* means no length to compare, so nothing is filtered out.
+    """
+    if not duration_ms:
+        return list(tracks)
+    return [
+        t
+        for t in tracks
+        if t.length_ms and abs(t.length_ms - duration_ms) <= tolerance_ms
+    ]
+
+
+def title_agreeing(
+    tracks: list[CatalogTrack],
+    title: str,
+    duration_ms: int | None = None,
+    tolerance_ms: int = DURATION_TOLERANCE_MS,
+) -> list[CatalogTrack]:
+    """Candidates passing both gates: the title *and* the duration.
+
+    For loose queries — a single artist name, or one scraped out of a title
+    field — duration alone is not enough. Unrelated tracks land within 7s of
+    each other often enough to matter, and an instrumental is the exact same
+    length as the original.
+    """
+    return within_duration(
+        [t for t in tracks if _title_agrees(title, t.name, t.mix_name)],
+        duration_ms,
+        tolerance_ms,
+    )
+
+
 def pick_best(
     tracks: list[CatalogTrack],
     duration_ms: int | None = None,
     tolerance_ms: int = DURATION_TOLERANCE_MS,
+    title: str | None = None,
 ) -> tuple[CatalogTrack | None, str]:
     """Pick the best candidate: duration-closest, then oldest.
 
@@ -248,9 +329,19 @@ def pick_best(
     compilation or a different-length mix). Returns (pick, reason) where
     reason is 'match', 'no-candidates', or 'ambiguous' (nothing close
     in duration — skipped rather than risking a wrong tag).
+
+    *title* adds a second gate for loose queries (a single artist name, or a
+    name scraped out of the title field). Duration alone is not enough there:
+    unrelated tracks land within 7s of each other often enough to matter, so
+    the candidate's name must also agree with *title*. Omitted by the callers
+    that already constrain the query server-side.
     """
     if not tracks:
         return None, "no-candidates"
+    if title:
+        tracks = [t for t in tracks if _title_agrees(title, t.name, t.mix_name)]
+    if not tracks:
+        return None, "ambiguous"
     if duration_ms:
         close = [
             t

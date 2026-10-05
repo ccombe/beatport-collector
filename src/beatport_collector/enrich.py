@@ -20,10 +20,12 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Protocol
 
 import requests
 
 from beatport_collector import catalog_api, tagger
+from beatport_collector.matching import MIX_PAREN
 from beatport_collector.paths import (  # noqa: F401
     windows_to_wsl,
     wsl_to_windows,
@@ -33,12 +35,10 @@ from beatport_collector.tagger import TagReport
 
 logger = logging.getLogger(__name__)
 
-MIX_RE = re.compile(r"^(?P<base>.*?)\s*[\(\[](?P<mix>[^\)\]]+)[\)\]]\s*$")
-
 
 def split_mix(title: str) -> tuple[str, str]:
     """Split 'Mover (Extended Mix)' -> ('Mover', 'Extended Mix')."""
-    m = MIX_RE.match(title.strip())
+    m = MIX_PAREN.match(title.strip())
     if not m:
         return title.strip(), ""
     return m.group("base").strip(), m.group("mix").strip()
@@ -143,6 +143,26 @@ class EnrichStatus(StrEnum):
     VERIFY_FAILED = "verify-failed"
 
 
+#: A source resolved the track if it found it at all. VERIFY_FAILED counts:
+#: the data was found and only the *write* was refused, so trying another
+#: source would be second-guessing a match rather than fixing a miss.
+_RESOLVED_STATUSES = (EnrichStatus.MATCHED, EnrichStatus.VERIFY_FAILED)
+
+
+def _status_or(reason: str, default: EnrichStatus) -> EnrichStatus:
+    """Coerce a pick_best reason into a status, tolerating an unknown one.
+
+    ``reason`` comes from pick_best as a free-form string, and it is also
+    monkeypatched in tests. Passing an unrecognised value straight to
+    EnrichStatus() raises ValueError, which would abandon the file and report
+    nothing at all -- strictly worse than reporting the default.
+    """
+    try:
+        return EnrichStatus(reason)
+    except ValueError:
+        return default
+
+
 @dataclass
 class EnrichResult:
     path: str
@@ -203,30 +223,99 @@ def _clean_artist(artist: str) -> str:
     return cleaned or artist
 
 
-def _search_candidates(
-    token: str,
-    artist: str,
-    title: str,
-    base: str,
-    mix: str,
-    delay: float,
-) -> list[catalog_api.CatalogTrack]:
-    """Ordered search variants, first non-empty wins.
+#: Separators that mean "more than one artist". Beatport indexes each artist
+#: separately, so a joined string never matches its ``artist_name`` filter.
+#:
+#: Deliberately *not* the same list as ``matching._parse_artists``, and the two
+#: should not be merged. Those separators build a comparison key, so being
+#: liberal is free. These build an API query, where a wrongly split name means
+#: a search that can only return nothing -- hence word-boundary anchoring and no
+#: bare ``feat``/``vs`` substring replacement, so ``Defeater`` survives intact.
+ARTIST_SPLIT_RE = re.compile(
+    r"\s*(?:,|;|&|\+|\bx\b|\bvs\.?\b|\b(?:feat|ft|featuring)\.?)\s+"
+    # A slash only counts when padded: 'AC/DC' is a band, 'Dom & Roland / Amon
+    # Tobin' is two. Bare '/' is never a separator here.
+    r"|\s+/\s+",
+    re.IGNORECASE,
+)
+#: Trailing '(feat. X)' / '[ft. X]' in a title: the featured act is an artist,
+#: not part of the track name.
+#:
+#: Both whitespace runs carry ``(?<!\s)`` and the inner run is capped, the same
+#: two guards :mod:`beatport_collector.matching` documents. Without them this
+#: measured ~8x per doubling under ``search()`` -- 13s on a 1600-space string --
+#: because the engine retried the leading run from every offset inside it.
+FEAT_SUFFIX_RE = re.compile(
+    r"(?<!\s)\s*[\(\[]?(?<!\s)\s*\b(?:feat|ft|featuring)\b\.?\s+[^)\]]{0,120}"
+    r"[\)\]]?\s*$",
+    re.IGNORECASE,
+)
 
-    Exact, then full title, then swapped roles (files with artist/title
-    reversed — the swap fires even without a mix name, unlike before).
-    Each distinct query runs once; duration gating downstream means a
-    wrong guess cannot stick.
+
+def split_artists(artist: str) -> list[str]:
+    """'A & B' -> ['A', 'B']. Single artists come back as one element."""
+    parts = [p.strip(" -_,") for p in ARTIST_SPLIT_RE.split(artist or "")]
+    return [p for p in parts if p]
+
+
+def _passing(
+    cands: list[catalog_api.CatalogTrack],
+    duration_ms: int | None,
+    gate_title: str = "",
+) -> list[catalog_api.CatalogTrack]:
+    """Candidates clearing every gate, or [] when none do.
+
+    Returns the filtered list, not a bool: the caller re-picks the oldest
+    survivor, so handing back the whole list would let a candidate this gate
+    just rejected win that pick.
     """
-    artist = _clean_artist(artist)
-    full = clean_query(title, artist)
-    swap_base, swap_mix = split_mix(full)
-    seen: set[tuple[str, str, str]] = set()
-    for search_artist, search_title, search_mix in (
-        (artist, base, mix),
-        (artist, full, ""),
-        (swap_base, artist, swap_mix),
-    ):
+    if not cands:
+        return []
+    if not gate_title:
+        # Server-side artist+name already constrain these queries, so keep the
+        # historical duration-only rule.
+        return (
+            cands
+            if duration_ms is None
+            else catalog_api.within_duration(cands, duration_ms)
+        )
+    return catalog_api.title_agreeing(cands, gate_title, duration_ms)
+
+
+def _escalation_queries(
+    artist: str, title: str, full: str, base: str, mix: str
+) -> list[tuple[str, str, str]]:
+    """Per-artist variants for a joined artist name, cheapest first.
+
+    A title only hides artist names when it splits in two or more; a
+    one-element split would just re-query the whole title as an artist name.
+    """
+    names = split_artists(artist) or [artist]
+    no_feat = FEAT_SUFFIX_RE.sub("", full).strip()
+    queries = [(n, base, mix) for n in names]
+    if no_feat and no_feat != full:
+        stripped_base, stripped_mix = split_mix(no_feat)
+        queries += [(n, stripped_base, stripped_mix) for n in names]
+    in_title = split_artists(title)
+    if len(in_title) > 1:
+        queries += [(n, base, "") for n in in_title]
+    return queries
+
+
+def _try_queries(
+    token: str,
+    queries: list[tuple[str, str, str]],
+    delay: float,
+    duration_ms: int | None,
+    seen: set[tuple[str, str, str]],
+    gate_title: bool,
+) -> list[catalog_api.CatalogTrack]:
+    """Run *queries* in order, returning the first that yields candidates.
+
+    Each distinct query runs once. *gate_title* turns on the title gate, which
+    only the loose per-artist queries need.
+    """
+    for search_artist, search_title, search_mix in queries:
         key = (search_artist, search_title, search_mix)
         if key in seen:
             continue
@@ -234,9 +323,123 @@ def _search_candidates(
         cands = catalog_api.search_tracks(
             token, search_artist, search_title, mix_name=search_mix, delay=delay
         )
-        if cands:
-            return cands
+        good = _passing(cands, duration_ms, search_title if gate_title else "")
+        if good:
+            return good
     return []
+
+
+def _search_candidates(
+    token: str,
+    artist: str,
+    title: str,
+    base: str,
+    mix: str,
+    delay: float,
+    duration_ms: int | None = None,
+) -> list[catalog_api.CatalogTrack]:
+    """Ordered search variants, first *usable* one wins.
+
+    Exact, then full title, then swapped roles (files with artist/title
+    reversed -- the swap fires even without a mix name, unlike before). Each
+    distinct query runs once.
+
+    Only when those all come back unusable does it escalate to the
+    multi-artist variants: joined artist names ('A & B', 'A feat. B', 'A x B')
+    never match Beatport's per-artist ``artist_name`` filter, so each artist is
+    tried on its own, plus the artists hiding in the title of a swapped-tag
+    file. Those queries are loose, so their candidates must pass the title gate
+    as well as duration -- without it a same-length track by a different artist
+    gets written as a confident match.
+
+    *duration_ms* is what makes 'unusable' decidable; without it escalation
+    triggers only on an empty result, as before.
+    """
+    artist = _clean_artist(artist)
+    full = clean_query(title, artist)
+    swap_base, swap_mix = split_mix(full)
+    seen: set[tuple[str, str, str]] = set()
+
+    exact = _try_queries(
+        token,
+        [(artist, base, mix), (artist, full, ""), (swap_base, artist, swap_mix)],
+        delay,
+        duration_ms,
+        seen,
+        gate_title=False,
+    )
+    if exact:
+        return exact
+    return _try_queries(
+        token,
+        _escalation_queries(artist, title, full, base, mix),
+        delay,
+        duration_ms,
+        seen,
+        gate_title=True,
+    )
+
+
+@dataclass(frozen=True)
+class WriteMode:
+    """How a resolution is allowed to touch the file.
+
+    Bundled because it travels together through every fallback: three keyword
+    arguments repeated at each call site is how one of them ends up missing.
+    """
+
+    dry_run: bool = True
+    overwrite: bool = False
+    art_overwrite: bool = False
+
+
+class _Sourced(Protocol):
+    """What a fallback source must hand back to be written.
+
+    Not a base class: the two sources share this shape and nothing else. Their
+    gating is deliberately *not* unified -- a MusicBrainz relevance score and a
+    Discogs tracklist length have nothing in common, and pretending otherwise
+    would hide the part that actually decides correctness.
+    """
+
+    def to_track(self, artist: str, title: str) -> catalog_api.CatalogTrack: ...
+
+
+def _unresolved(path: str, artist: str, title: str, reason: str) -> EnrichResult:
+    return EnrichResult(
+        path, artist, title, status=_status_or(reason, EnrichStatus.NO_CANDIDATES)
+    )
+
+
+def _write_from(
+    path: str,
+    artist: str,
+    title: str,
+    match: _Sourced,
+    mode: WriteMode,
+    source: str,
+    cache: bool = False,
+) -> EnrichResult:
+    """Plan and optionally write a source's match. The one place this happens.
+
+    Both fallbacks did this by hand, and the duplication is how they drift: they
+    had to agree on track construction, on the write flags, and on tagging the
+    result with its source.
+    """
+    track = match.to_track(artist, title)
+    result = apply_match(
+        path,
+        artist,
+        title,
+        track,
+        dry_run=mode.dry_run,
+        overwrite=mode.overwrite,
+        art_overwrite=mode.art_overwrite,
+    )
+    result.source = source
+    if cache:
+        result.snapshot = track.to_cache()
+    return result
 
 
 def _apply_musicbrainz(
@@ -245,37 +448,40 @@ def _apply_musicbrainz(
     title: str,
     duration_ms: int | None,
     reason: str,
-    *,
-    dry_run: bool,
-    overwrite: bool,
-    art_overwrite: bool,
+    mode: WriteMode,
 ) -> EnrichResult:
+    """First fallback. Release, date and label only -- never genre/BPM/key."""
     from beatport_collector import musicbrainz
 
     mb = musicbrainz.search_recording(artist, title, duration_ms=duration_ms)
     if mb is None or not (mb.release or mb.date or mb.label):
-        return EnrichResult(path, artist, title, status=EnrichStatus(reason))
-    mb_track = catalog_api.CatalogTrack(
-        id=0,
-        name=mb.title or title,
-        artists=mb.artist or artist,
-        release_name=mb.release,
-        publish_date=mb.date,
-        label=mb.label,
-    )
-    mb_result = apply_match(
-        path,
-        artist,
-        title,
-        mb_track,
-        dry_run=dry_run,
-        overwrite=overwrite,
-        art_overwrite=art_overwrite,
-    )
-    mb_result.source = "musicbrainz"
-    mb_result.snapshot = mb_track.to_cache()
-    mb_result.beatport_date = mb.date
-    return mb_result
+        return _unresolved(path, artist, title, reason)
+    result = _write_from(path, artist, title, mb, mode, "musicbrainz", cache=True)
+    result.beatport_date = mb.date
+    return result
+
+
+def _apply_discogs(
+    path: str,
+    artist: str,
+    title: str,
+    duration_ms: int | None,
+    reason: str,
+    mode: WriteMode,
+) -> EnrichResult:
+    """Second fallback: Discogs, which unlike MusicBrainz can supply genre.
+
+    A no-op when no token is configured, so a machine without a Discogs account
+    behaves exactly as if this did not exist.
+    """
+    from beatport_collector import discogs
+
+    if not discogs.is_available():
+        return _unresolved(path, artist, title, reason)
+    match = discogs.search_release(artist, title, duration_ms=duration_ms)
+    if match is None or not (match.release or match.date or match.genre):
+        return _unresolved(path, artist, title, reason)
+    return _write_from(path, artist, title, match, mode, "discogs")
 
 
 def enrich_one(
@@ -324,7 +530,9 @@ def enrich_one(
     track_id, _ = guess_beatport_id(path)
     direct = _fetch_direct(token, track_id, duration_ms)
     try:
-        cands = _search_candidates(token, artist, title, base, mix, delay)
+        cands = _search_candidates(
+            token, artist, title, base, mix, delay, duration_ms=duration_ms
+        )
         if direct is not None:
             best, reason = direct, "match"
         else:
@@ -333,18 +541,18 @@ def enrich_one(
         logger.warning("Search failed for %s - %s: %s", artist, title, e)
         return EnrichResult(path, artist, title, status=EnrichStatus.ERROR)
     if not best:
-        # Beatport came up empty — try MusicBrainz (release/date/label
-        # only; never genre/BPM/key). Score + artist gates inside.
-        return _apply_musicbrainz(
-            path,
-            artist,
-            title,
-            duration_ms,
-            reason,
-            dry_run=dry_run,
-            overwrite=overwrite,
-            art_overwrite=art_overwrite,
+        # Beatport came up empty. Fall back through the sources that need no
+        # Beatport account, cheapest first: MusicBrainz (release/date/label
+        # only; never genre/BPM/key, its genre data is too sparse to trust),
+        # then Discogs for whatever is still missing -- it is keyed, so it is
+        # skipped silently when no token is configured.
+        mode = WriteMode(
+            dry_run=dry_run, overwrite=overwrite, art_overwrite=art_overwrite
         )
+        result = _apply_musicbrainz(path, artist, title, duration_ms, reason, mode)
+        if result.status not in _RESOLVED_STATUSES:
+            result = _apply_discogs(path, artist, title, duration_ms, reason, mode)
+        return result
     result = apply_match(
         path,
         artist,
