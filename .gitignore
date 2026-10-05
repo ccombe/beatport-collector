@@ -80,3 +80,7 @@ _cmp*.py
 .coverage
 .coverage.*
 htmlcov/
+
+# Real batch/apply run output (manifests, progress logs, track snapshots)
+runs/
+*_tracks.json

@@ -78,8 +78,7 @@ TITLE_SUFFIXES = re.compile(
     #
     # Neither changes what matches: a run starting mid-whitespace can only
     # match a suffix of what the same pattern matches from the run's start.
-    # See tests/test_regex_linearity.py, which enforces the growth factor so
-    # this cannot silently regress.
+    # See tests/test_regex_guards.py, which asserts both guards are present.
     rf"(?<!\s)\s*[\(\[][^)\]]{{0,120}}?(?:{MIX_KEYWORDS}|feat\.|featuring)"
     r"[^\)]*[\)\]]\s*$",
     re.IGNORECASE,
