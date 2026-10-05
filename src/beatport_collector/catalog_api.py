@@ -241,8 +241,10 @@ DURATION_TOLERANCE_MS = 7000
 #: or a vocal is byte-for-byte the track's length, so the duration gate cannot
 #: tell them apart. Only reachable through a loose query, where the title gate
 #: would otherwise wave them through.
+#: 'a\s?capella' covers both spellings; listing 'acapella' beside it was a
+#: redundant alternative (S5855).
 STEM_MIX_RE = re.compile(
-    r"\b(instrumental|vocal|acapella|a\s?capella|stem|dub)\b", re.IGNORECASE
+    r"\b(instrumental|vocal|a\s?capella|stem|dub)\b", re.IGNORECASE
 )
 
 

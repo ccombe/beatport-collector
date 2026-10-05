@@ -161,7 +161,8 @@ class TestTitleGate:
         )
         best, reason = api_mod.pick_best([ok], duration_ms=200_000, title="La 42")
         assert reason == "match"
-        assert best is not None and best.id == 2
+        assert best is not None
+        assert best.id == 2
 
     def test_containment_either_way(self) -> None:
         from beatport_collector.catalog_api import CatalogTrack
@@ -169,7 +170,8 @@ class TestTitleGate:
         # A mix name in either field must not veto the match.
         ok = CatalogTrack(id=3, name="Moving In", artists="X", length_ms=200_000)
         best, _ = api_mod.pick_best([ok], duration_ms=200_000, title="Moving In (Dub)")
-        assert best is not None and best.id == 3
+        assert best is not None
+        assert best.id == 3
 
     def test_gate_omitted_keeps_duration_only_behaviour(self) -> None:
         from beatport_collector.catalog_api import CatalogTrack
@@ -179,7 +181,8 @@ class TestTitleGate:
         )
         best, reason = api_mod.pick_best([wrong], duration_ms=200_000)
         assert reason == "match"
-        assert best is not None and best.id == 4
+        assert best is not None
+        assert best.id == 4
 
     def test_empty_title_means_no_gate(self) -> None:
         # "" is how a caller says "no title gate", not "match nothing".
@@ -188,7 +191,8 @@ class TestTitleGate:
         t = CatalogTrack(id=5, name="Anything", artists="Z", length_ms=200_000)
         best, reason = api_mod.pick_best([t], duration_ms=200_000, title="")
         assert reason == "match"
-        assert best is not None and best.id == 5
+        assert best is not None
+        assert best.id == 5
 
 
 class TestMixGate:
@@ -205,7 +209,8 @@ class TestMixGate:
         best, reason = api_mod.pick_best(
             [stem], duration_ms=222_000, title="Feel Good Inc."
         )
-        assert best is None and reason == "ambiguous"
+        assert best is None
+        assert reason == "ambiguous"
 
     def test_accepts_stem_when_the_file_asks_for_it(self) -> None:
         from beatport_collector.catalog_api import CatalogTrack
@@ -217,7 +222,8 @@ class TestMixGate:
             [stem], duration_ms=222_000, title="Feel Good Inc. (Instrumental)"
         )
         assert reason == "match"
-        assert best is not None and best.id == 2
+        assert best is not None
+        assert best.id == 2
 
     def test_rejects_a_different_named_remix(self) -> None:
         from beatport_collector.catalog_api import CatalogTrack
@@ -239,7 +245,8 @@ class TestMixGate:
         best, _ = api_mod.pick_best(
             [right], duration_ms=300_000, title="Shiver (Cassian Extended Remix)"
         )
-        assert best is not None and best.id == 4
+        assert best is not None
+        assert best.id == 4
 
     def test_nameless_mix_still_passes(self) -> None:
         from beatport_collector.catalog_api import CatalogTrack
@@ -250,4 +257,5 @@ class TestMixGate:
         best, reason = api_mod.pick_best(
             [t], duration_ms=300_000, title="Do It Like Me"
         )
-        assert reason == "match" and best is not None
+        assert reason == "match"
+        assert best is not None

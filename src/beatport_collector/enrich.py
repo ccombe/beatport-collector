@@ -219,8 +219,15 @@ ARTIST_SPLIT_RE = re.compile(
 )
 #: Trailing '(feat. X)' / '[ft. X]' in a title: the featured act is an artist,
 #: not part of the track name.
+#:
+#: Both whitespace runs carry ``(?<!\s)`` and the inner run is capped, the same
+#: two guards :mod:`beatport_collector.matching` documents. Without them this
+#: measured ~8x per doubling under ``search()`` -- 13s on a 1600-space string --
+#: because the engine retried the leading run from every offset inside it.
 FEAT_SUFFIX_RE = re.compile(
-    r"\s*[\(\[]?\s*\b(?:feat|ft|featuring)\b\.?\s+[^)\]]*[\)\]]?\s*$", re.IGNORECASE
+    r"(?<!\s)\s*[\(\[]?(?<!\s)\s*\b(?:feat|ft|featuring)\b\.?\s+[^)\]]{0,120}"
+    r"[\)\]]?\s*$",
+    re.IGNORECASE,
 )
 
 
@@ -228,6 +235,77 @@ def split_artists(artist: str) -> list[str]:
     """'A & B' -> ['A', 'B']. Single artists come back as one element."""
     parts = [p.strip(" -_,") for p in ARTIST_SPLIT_RE.split(artist or "")]
     return [p for p in parts if p]
+
+
+def _passing(
+    cands: list[catalog_api.CatalogTrack],
+    duration_ms: int | None,
+    gate_title: str = "",
+) -> list[catalog_api.CatalogTrack]:
+    """Candidates clearing every gate, or [] when none do.
+
+    Returns the filtered list, not a bool: the caller re-picks the oldest
+    survivor, so handing back the whole list would let a candidate this gate
+    just rejected win that pick.
+    """
+    if not cands:
+        return []
+    if not gate_title:
+        # Server-side artist+name already constrain these queries, so keep the
+        # historical duration-only rule.
+        return (
+            cands
+            if duration_ms is None
+            else catalog_api.within_duration(cands, duration_ms)
+        )
+    return catalog_api.title_agreeing(cands, gate_title, duration_ms)
+
+
+def _escalation_queries(
+    artist: str, title: str, full: str, base: str, mix: str
+) -> list[tuple[str, str, str]]:
+    """Per-artist variants for a joined artist name, cheapest first.
+
+    A title only hides artist names when it splits in two or more; a
+    one-element split would just re-query the whole title as an artist name.
+    """
+    names = split_artists(artist) or [artist]
+    no_feat = FEAT_SUFFIX_RE.sub("", full).strip()
+    queries = [(n, base, mix) for n in names]
+    if no_feat and no_feat != full:
+        stripped_base, stripped_mix = split_mix(no_feat)
+        queries += [(n, stripped_base, stripped_mix) for n in names]
+    in_title = split_artists(title)
+    if len(in_title) > 1:
+        queries += [(n, base, "") for n in in_title]
+    return queries
+
+
+def _try_queries(
+    token: str,
+    queries: list[tuple[str, str, str]],
+    delay: float,
+    duration_ms: int | None,
+    seen: set[tuple[str, str, str]],
+    gate_title: bool,
+) -> list[catalog_api.CatalogTrack]:
+    """Run *queries* in order, returning the first that yields candidates.
+
+    Each distinct query runs once. *gate_title* turns on the title gate, which
+    only the loose per-artist queries need.
+    """
+    for search_artist, search_title, search_mix in queries:
+        key = (search_artist, search_title, search_mix)
+        if key in seen:
+            continue
+        seen.add(key)
+        cands = catalog_api.search_tracks(
+            token, search_artist, search_title, mix_name=search_mix, delay=delay
+        )
+        good = _passing(cands, duration_ms, search_title if gate_title else "")
+        if good:
+            return good
+    return []
 
 
 def _search_candidates(
@@ -242,16 +320,16 @@ def _search_candidates(
     """Ordered search variants, first *usable* one wins.
 
     Exact, then full title, then swapped roles (files with artist/title
-    reversed — the swap fires even without a mix name, unlike before). Each
+    reversed -- the swap fires even without a mix name, unlike before). Each
     distinct query runs once.
 
     Only when those all come back unusable does it escalate to the
     multi-artist variants: joined artist names ('A & B', 'A feat. B', 'A x B')
     never match Beatport's per-artist ``artist_name`` filter, so each artist is
     tried on its own, plus the artists hiding in the title of a swapped-tag
-    file. Those queries are loose, so their candidates must pass the title
-    gate as well as duration — without it a same-length track by a different
-    artist gets written as a confident match.
+    file. Those queries are loose, so their candidates must pass the title gate
+    as well as duration -- without it a same-length track by a different artist
+    gets written as a confident match.
 
     *duration_ms* is what makes 'unusable' decidable; without it escalation
     triggers only on an empty result, as before.
@@ -259,73 +337,26 @@ def _search_candidates(
     artist = _clean_artist(artist)
     full = clean_query(title, artist)
     swap_base, swap_mix = split_mix(full)
-
-    def passing(
-        cands: list[catalog_api.CatalogTrack], gate_title: str = ""
-    ) -> list[catalog_api.CatalogTrack]:
-        """Candidates clearing every gate, or [] when none do.
-
-        Returns the filtered list, not a bool: the caller re-picks the oldest
-        survivor, so handing back the whole list would let a candidate this
-        gate just rejected win that pick.
-        """
-        if not cands:
-            return []
-        if not gate_title:
-            # Server-side artist+name already constrain these queries; keep the
-            # historical duration-only rule.
-            return (
-                cands
-                if duration_ms is None
-                else catalog_api.within_duration(cands, duration_ms)
-            )
-        return catalog_api.title_agreeing(cands, gate_title, duration_ms)
-
-    # Escalation queries: each artist alone, and the same with a featuring
-    # suffix stripped off the title. Ordered so the likeliest lead artist is
-    # tried before the collaborators.
-    names = split_artists(artist) or [artist]
-    no_feat = FEAT_SUFFIX_RE.sub("", full).strip()
-    no_feat_base, no_feat_mix = split_mix(no_feat)
-    loose: list[tuple[str, str, str]] = [(n, base, mix) for n in names]
-    if no_feat and no_feat != full:
-        loose += [(n, no_feat_base, no_feat_mix) for n in names]
-    # A title only hides artist names if it splits in two or more. A
-    # one-element split would just re-query the whole title as an artist name.
-    in_title = split_artists(title)
-    if len(in_title) > 1:
-        loose += [(n, base, "") for n in in_title]
-
     seen: set[tuple[str, str, str]] = set()
-    for search_artist, search_title, search_mix in (
-        (artist, base, mix),
-        (artist, full, ""),
-        (swap_base, artist, swap_mix),
-    ):
-        key = (search_artist, search_title, search_mix)
-        if key in seen:
-            continue
-        seen.add(key)
-        cands = catalog_api.search_tracks(
-            token, search_artist, search_title, mix_name=search_mix, delay=delay
-        )
-        good = passing(cands)
-        if good:
-            return good
 
-    for search_artist, search_title, search_mix in loose:
-        key = (search_artist, search_title, search_mix)
-        if key in seen:
-            continue
-        seen.add(key)
-        cands = catalog_api.search_tracks(
-            token, search_artist, search_title, mix_name=search_mix, delay=delay
-        )
-        # Loose query: title and duration both required.
-        good = passing(cands, gate_title=search_title)
-        if good:
-            return good
-    return []
+    exact = _try_queries(
+        token,
+        [(artist, base, mix), (artist, full, ""), (swap_base, artist, swap_mix)],
+        delay,
+        duration_ms,
+        seen,
+        gate_title=False,
+    )
+    if exact:
+        return exact
+    return _try_queries(
+        token,
+        _escalation_queries(artist, title, full, base, mix),
+        delay,
+        duration_ms,
+        seen,
+        gate_title=True,
+    )
 
 
 def _apply_musicbrainz(
