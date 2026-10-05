@@ -223,8 +223,9 @@ def test_non_str_token_fails_before_the_network(monkeypatch):
     # A placeholder, not a credential: the assertion below is that this string
     # never reaches the error message.
     placeholder = "not-a-real-token"
+    wrong_type = BeatportToken(access_token=placeholder)
     with pytest.raises(TypeError) as exc:
-        BeatportClient(token=BeatportToken(access_token=placeholder))  # type: ignore
+        BeatportClient(token=wrong_type)  # type: ignore
     assert "token must be str, got BeatportToken" in str(exc.value)
     assert placeholder not in str(exc.value)
 

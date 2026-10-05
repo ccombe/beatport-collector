@@ -645,7 +645,9 @@ class TestGoldenFixtures:
             for r in _fixture("search_kerri_chandler.json")["results"]
             if r["type"] == "release"
         ]
-        assert releases and all("style" in r and "styles" not in r for r in releases)
+        assert releases
+        assert all("style" in r for r in releases)
+        assert all("styles" not in r for r in releases)
 
     def test_genre_from_a_real_release_is_its_first_style(self) -> None:
         release = _fixture("release_1338944.json")
