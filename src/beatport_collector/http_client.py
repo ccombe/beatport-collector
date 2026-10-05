@@ -117,6 +117,12 @@ class BeatportClient:
         min_gap: float = MIN_GAP_SECONDS,
         max_retries: int = MAX_RETRIES,
     ) -> None:
+        # A ``BeatportToken`` dataclass passed by mistake stringifies into
+        # ``Bearer BeatportToken(access_token='...')``, which the API answers
+        # with a 401 that points nowhere near the real mistake. Every Beatport
+        # call builds its client here, so this is the one place to fail loudly.
+        if not isinstance(token, str):
+            raise TypeError(f"token must be str, got {type(token).__name__}")
         self._token = token
         self._timeout = timeout
         self._user_agent = user_agent
