@@ -22,6 +22,7 @@ dev = [
     "ty>=0.0.84",
     "mutmut>=3.0",
     "hypothesis>=6.0",
+    "pytest-cov>=7.0",
 ]
 
 [tool.mutmut]
@@ -42,6 +43,16 @@ do_not_mutate_patterns = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["src/beatport_collector"]
+
+[tool.coverage.report]
+# The README states 100% as a floor, so it is enforced here rather than left
+# to discipline. Lowering this number is a decision, not a cleanup.
+fail_under = 100
+show_missing = true
+skip_covered = true
 
 [tool.ruff]
 target-version = "py313"

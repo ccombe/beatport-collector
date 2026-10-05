@@ -404,12 +404,13 @@ def test_handle_enrich_reports_match_and_miss(monkeypatch, capsys) -> None:
         _ns(
             username="u",
             password="p",
-            paths=["a.mp3", "b.mp3"],
+            paths=["C:\\a.mp3", "C:\\b.mp3"],
             limit=5,
             apply=True,
             overwrite=False,
             art_overwrite=False,
             delay=0.0,
+            allow_drives=None,
         )
     )
     out = capsys.readouterr().out
@@ -417,7 +418,7 @@ def test_handle_enrich_reports_match_and_miss(monkeypatch, capsys) -> None:
     assert "NO-CANDIDATES B - U" in out
     assert seen == {
         "token": "t",
-        "paths": ["a.mp3", "b.mp3"],
+        "paths": ["C:\\a.mp3", "C:\\b.mp3"],
         "limit": 5,
         "dry_run": False,
         "overwrite": False,
@@ -441,6 +442,7 @@ def _batch_ns(**over) -> argparse.Namespace:
         "workers": 4,
         "username": "u",
         "password": "p",
+        "allow_drives": None,
     }
     base.update(over)
     return _ns(**base)
@@ -485,7 +487,7 @@ def test_handle_batch_flags_stopped_early(monkeypatch, capsys) -> None:
 def test_handle_apply_delegates(monkeypatch, capsys) -> None:
     import beatport_collector.batch_runner as br_mod
 
-    monkeypatch.setattr(br_mod, "load_matched", lambda p: [{"path": "a"}])
+    monkeypatch.setattr(br_mod, "load_matched", lambda p: [{"path": "C:\\a"}])
     monkeypatch.setattr(cli_mod, "_get_token", lambda args: "tok")
     seen: dict = {}
 
@@ -505,6 +507,7 @@ def test_handle_apply_delegates(monkeypatch, capsys) -> None:
             workers=1,
             username="u",
             password="p",
+            allow_drives=None,
         )
     )
     assert seen["apply_tags"] is True
@@ -723,6 +726,7 @@ def test_handle_enrich_prompts_for_missing_credentials(monkeypatch) -> None:
             overwrite=False,
             art_overwrite=False,
             delay=0.0,
+            allow_drives=None,
         )
     )
 
@@ -731,7 +735,7 @@ def test_handle_apply_limit_trims_manifest(monkeypatch) -> None:
     import beatport_collector.batch_runner as br_mod
 
     monkeypatch.setattr(
-        br_mod, "load_matched", lambda p: [{"path": "a"}, {"path": "b"}]
+        br_mod, "load_matched", lambda p: [{"path": "C:\\a"}, {"path": "C:\\b"}]
     )
     monkeypatch.setattr(cli_mod, "_get_token", lambda args: "tok")
     seen: dict = {}
@@ -752,6 +756,7 @@ def test_handle_apply_limit_trims_manifest(monkeypatch) -> None:
             workers=1,
             username="u",
             password="p",
+            allow_drives=None,
         )
     )
     assert seen["n"] == 1
@@ -762,3 +767,207 @@ def test_module_main_entry_point() -> None:
 
     with pytest.raises(SystemExit):
         runpy.run_module("beatport_collector.cli", run_name="__main__", alter_sys=True)
+
+
+# --- drive allow-list ---
+
+
+class TestGuardWrites:
+    def test_defaults_to_c_only(self) -> None:
+        paths = ["C:\\a.mp3", "G:\\My Drive\\a.mp3", "b.mp3"]
+        assert cli_mod._guard_writes(paths, None) == ["C:\\a.mp3"]
+
+    def test_named_drive_is_released(self) -> None:
+        assert cli_mod._guard_writes(["G:\\My Drive\\a.mp3"], "g") == [
+            "G:\\My Drive\\a.mp3"
+        ]
+
+    def test_naming_a_drive_replaces_the_default_not_adds_to_it(self) -> None:
+        """Opting in to G: is a deliberate act, so C: has to be named too."""
+        paths = ["C:\\a.mp3", "G:\\My Drive\\a.mp3"]
+        assert cli_mod._guard_writes(paths, "g") == ["G:\\My Drive\\a.mp3"]
+        assert cli_mod._guard_writes(paths, "c,g") == paths
+
+    def test_reports_what_it_blocked(self, capsys) -> None:
+        cli_mod._guard_writes(["G:\\a.mp3"], None)
+        out = capsys.readouterr().out
+        assert "BLOCKED 1 path(s)" in out
+        assert "['C']" in out
+        assert "--allow-drives" in out
+
+    def test_silent_when_nothing_blocked(self, capsys) -> None:
+        assert cli_mod._guard_writes(["C:\\a.mp3"], None) == ["C:\\a.mp3"]
+        assert capsys.readouterr().out == ""
+
+
+class TestGuardManifest:
+    def test_keeps_only_allowed_entries(self) -> None:
+        entries = [{"path": "C:\\a"}, {"path": "G:\\b"}, {"path": "c"}]
+        assert cli_mod._guard_manifest(entries, None) == [{"path": "C:\\a"}]
+
+    def test_preserves_other_fields(self) -> None:
+        entries = [{"path": "G:\\b", "beatport_id": 7}]
+        assert cli_mod._guard_manifest(entries, "G") == entries
+
+    def test_missing_path_key_is_denied(self) -> None:
+        assert cli_mod._guard_manifest([{"beatport_id": 7}], "G") == []
+
+
+class TestHandlerWiring:
+    """The guard is live, not decoration: it runs before anything is written."""
+
+    def test_enrich_apply_blocks_unnamed_drive(self, monkeypatch, capsys) -> None:
+        import beatport_collector.enrich as enrich_mod
+
+        monkeypatch.setattr(
+            cli_mod, "oauth_login", lambda u, p: SimpleNamespace(access_token="t")
+        )
+        seen: dict = {}
+
+        def fake_enrich(token, paths, **kw):
+            seen["paths"] = paths
+            return []
+
+        monkeypatch.setattr(enrich_mod, "enrich_files", fake_enrich)
+        cli_mod.handle_enrich(
+            _ns(
+                username="u",
+                password="p",
+                paths=["G:\\My Drive\\a.mp3", "C:\\a.mp3"],
+                limit=5,
+                apply=True,
+                overwrite=False,
+                art_overwrite=False,
+                delay=0.0,
+                allow_drives=None,
+            )
+        )
+        assert seen["paths"] == ["C:\\a.mp3"]
+        assert "BLOCKED 1 path(s)" in capsys.readouterr().out
+
+    def test_enrich_apply_honours_opt_in(self, monkeypatch) -> None:
+        import beatport_collector.enrich as enrich_mod
+
+        monkeypatch.setattr(
+            cli_mod, "oauth_login", lambda u, p: SimpleNamespace(access_token="t")
+        )
+        seen: dict = {}
+
+        def fake_enrich(token, paths, **kw):
+            seen["paths"] = paths
+            return []
+
+        monkeypatch.setattr(enrich_mod, "enrich_files", fake_enrich)
+        cli_mod.handle_enrich(
+            _ns(
+                username="u",
+                password="p",
+                paths=["G:\\My Drive\\a.mp3"],
+                limit=5,
+                apply=True,
+                overwrite=False,
+                art_overwrite=False,
+                delay=0.0,
+                allow_drives="G",
+            )
+        )
+        assert seen["paths"] == ["G:\\My Drive\\a.mp3"]
+
+    def test_enrich_dry_run_is_not_gated(self, monkeypatch) -> None:
+        """A dry run writes nothing, so it still reports the whole library."""
+        import beatport_collector.enrich as enrich_mod
+
+        monkeypatch.setattr(
+            cli_mod, "oauth_login", lambda u, p: SimpleNamespace(access_token="t")
+        )
+        seen: dict = {}
+
+        def fake_enrich(token, paths, **kw):
+            seen["paths"] = paths
+            return []
+
+        monkeypatch.setattr(enrich_mod, "enrich_files", fake_enrich)
+        cli_mod.handle_enrich(
+            _ns(
+                username="u",
+                password="p",
+                paths=["G:\\My Drive\\a.mp3"],
+                limit=5,
+                apply=False,
+                overwrite=False,
+                art_overwrite=False,
+                delay=0.0,
+                allow_drives=None,
+            )
+        )
+        assert seen["paths"] == ["G:\\My Drive\\a.mp3"]
+
+    @pytest.mark.parametrize("flags", [{"apply": True}, {"apply_now": True}])
+    def test_batch_writing_modes_are_gated(self, monkeypatch, flags) -> None:
+        import beatport_collector.batch_runner as br_mod
+
+        monkeypatch.setattr(
+            br_mod,
+            "load_manifest",
+            lambda p: [{"path": "C:\\a"}, {"path": "G:\\b"}],
+        )
+        monkeypatch.setattr(cli_mod, "_get_token", lambda args: "tok")
+        seen: dict = {}
+
+        def fake_run(manifest, token, **kw):
+            seen["manifest"] = manifest
+            return Counter()
+
+        monkeypatch.setattr(br_mod, "run", fake_run)
+        cli_mod.handle_batch(_batch_ns(**flags))
+        assert seen["manifest"] == [{"path": "C:\\a"}]
+
+    def test_batch_dry_run_is_not_gated(self, monkeypatch) -> None:
+        import beatport_collector.batch_runner as br_mod
+
+        monkeypatch.setattr(
+            br_mod,
+            "load_manifest",
+            lambda p: [{"path": "C:\\a"}, {"path": "G:\\b"}],
+        )
+        monkeypatch.setattr(cli_mod, "_get_token", lambda args: "tok")
+        seen: dict = {}
+
+        def fake_run(manifest, token, **kw):
+            seen["manifest"] = manifest
+            return Counter()
+
+        monkeypatch.setattr(br_mod, "run", fake_run)
+        cli_mod.handle_batch(_batch_ns(allow_drives="G"))
+        assert seen["manifest"] == [{"path": "C:\\a"}, {"path": "G:\\b"}]
+
+    def test_apply_is_always_gated(self, monkeypatch) -> None:
+        """apply has no dry-run mode: it only ever writes."""
+        import beatport_collector.batch_runner as br_mod
+
+        monkeypatch.setattr(
+            br_mod, "load_matched", lambda p: [{"path": "G:\\b"}, {"path": "C:\\a"}]
+        )
+        monkeypatch.setattr(cli_mod, "_get_token", lambda args: "tok")
+        seen: dict = {}
+
+        def fake_run(manifest, token, **kw):
+            seen["manifest"] = manifest
+            return Counter()
+
+        monkeypatch.setattr(br_mod, "run", fake_run)
+        cli_mod.handle_apply(
+            _ns(
+                match_jsonl="m.jsonl",
+                cache="c.json",
+                progress="p.jsonl",
+                limit=0,
+                art_overwrite=False,
+                delay=0.0,
+                workers=1,
+                username="u",
+                password="p",
+                allow_drives=None,
+            )
+        )
+        assert seen["manifest"] == [{"path": "C:\\a"}]

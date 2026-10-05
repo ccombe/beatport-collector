@@ -225,6 +225,7 @@ uv run beatport-collector enrich track1.mp3 "track2.flac" --limit 5
 | `--art-overwrite` | off | Also replace existing cover art |
 | `--delay S` | 2.0 | Delay between searches (politeness) |
 | `--workers N` | 4 | Worker threads (up to 10) |
+| `--allow-drives L` | `C` | Drives a writing run may touch, e.g. `--allow-drives G` |
 
 ### Resuming and durability
 
@@ -237,6 +238,12 @@ Every finished file is appended to `--progress` as it completes, so:
 - If too many files fail in a row (expired token, API down), the run **stops**
   instead of marking your whole library as errored. Fix the cause and rerun the
   same command to carry on.
+
+Appending per record is what makes all of the above true. A script that buffers
+its output and writes once at the end loses every record it already paid for the
+moment it is interrupted, which is the opposite of this section. Reuse
+`batch_runner.append_result` and `batch_runner.load_done` rather than
+re-implementing either.
 
 ## Working with foobar2000
 
@@ -273,6 +280,12 @@ files are created.
 
 Two details worth knowing:
 
+- **Which drives you may write to.** `enrich`, `batch` and `apply` take
+  `--allow-drives`, defaulting to `C` only. Any path on another drive — including
+  one whose drive cannot be identified, such as a relative or UNC path — is
+  refused, so an authorised run on one library cannot quietly become standing
+  permission to write another. Dry-runs are ungated on purpose, so a dry-run still
+  reports the work waiting on `G:`.
 - **Retries.** Cloud and virtual drives (Google Drive, Dropbox) hold file
   handles transiently, which makes an atomic replace fail with "file in use".
   Those are retried with backoff rather than treated as errors.
@@ -355,6 +368,7 @@ outcomes identical in the other.
 |---|---|
 | `ubuntu-latest` | lint, format, types and tests on Linux |
 | `windows-latest` | the same on Windows — the library tooling runs on both |
+| `Coverage (100% floor)` | no uncovered line, on both platforms |
 | `SonarCloud Code Analysis` | the SonarCloud quality gate on the PR |
 
 The gate is the thing to watch when a PR is red: it reports the conditions
@@ -373,10 +387,11 @@ touch those patterns, that test is the one to run.
 
 ### Coverage
 
-Line coverage is 100% of all 19 modules, and that is treated as a floor rather
-than a goal. The interesting code here is I/O-shaped — tag writers, atomic
-replaces, resume logs — where the failure modes are the bugs, so a branch that
-never executes is a branch nobody has checked.
+Line coverage is 100% of all 20 modules, and that is enforced as a floor rather
+than a goal: `fail_under = 100` in `pyproject.toml` plus a `Coverage (100% floor)`
+step in CI, so an uncovered new line is a red build. The interesting code here is
+I/O-shaped — tag writers, atomic replaces, resume logs — where the failure modes
+are the bugs, so a branch that never executes is a branch nobody has checked.
 
 Mutation testing is the second gate on that. Line coverage says a line ran;
 mutation says the assertions would notice if it were wrong. A high score with

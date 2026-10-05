@@ -34,16 +34,31 @@ jobs:
       - name: Install project
         run: uv sync --all-groups --frozen
 
+      # Every uv run below carries three flags, none of them optional:
+      #   --frozen    never re-resolve, so CI runs the locked versions
+      #                (Sonar S8544)
+      #   --no-sync   never touch the environment; the sync step above
+      #                already installed everything
+      #   --no-build  never invoke the build backend (Sonar S8541)
+      # --no-build alone is not enough: on its own uv still tries to install
+      # the project, and refuses because an editable distribution has no
+      # binary to install. --no-sync is what makes the pair work, so do not
+      # drop one and keep the other.
       - name: Lint (ruff)
-        run: uv run ruff check src/ tests/
+        run: uv run --frozen --no-sync --no-build ruff check src/ tests/
 
       - name: Format check (ruff)
-        run: uv run ruff format --check src/ tests/
+        run: uv run --frozen --no-sync --no-build ruff format --check src/ tests/
 
       - name: Types (ty)
-        run: uv run ty check src/ tests/
+        run: uv run --frozen --no-sync --no-build ty check src/ tests/
 
-      - name: Tests
+      - name: Tests + coverage (100% floor)
         # Tests needing a real music library or purchase CSV skip cleanly
         # when BPC_LIBRARY_DIR is unset, so this is self-contained.
-        run: uv run pytest -q
+        #
+        # --cov is folded in here rather than run as a second step: it is the
+        # same suite, and pytest-cov reads fail_under from
+        # [tool.coverage.report] and exits non-zero below it, so this fails the
+        # job either way. Running it twice cost ~26s per matrix leg for nothing.
+        run: uv run --frozen --no-sync --no-build pytest -q --cov

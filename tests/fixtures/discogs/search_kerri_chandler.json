@@ -1,0 +1,122 @@
+{
+  "pagination": {
+    "page": 1,
+    "pages": 633,
+    "per_page": 5,
+    "items": 3162
+  },
+  "results": [
+    {
+      "id": 59,
+      "type": "artist",
+      "title": "Kerri Chandler"
+    },
+    {
+      "id": 1338944,
+      "type": "release",
+      "title": "Risksoundsystem - Tsiy (Kerri Chandler Instrumental)",
+      "year": "2008",
+      "label": [
+        "Not On Label",
+        "Record Industry"
+      ],
+      "format": [
+        "Vinyl",
+        "12\"",
+        "45 RPM",
+        "Single Sided",
+        "White Label"
+      ],
+      "genre": [
+        "Electronic"
+      ],
+      "style": [
+        "House",
+        "Deep House"
+      ]
+    },
+    {
+      "id": 130363,
+      "type": "master",
+      "title": "Kerri Chandler - Kaoz Theory (The Essential Kerri Chandler)",
+      "year": "1998",
+      "label": [
+        "Harmless",
+        "Harmless Recordings",
+        "Harmless Recordings",
+        "Music Collection International Ltd.",
+        "VCI Plc",
+        "Kryptic Bass Monster Studios",
+        "Disctronics S",
+        "Disc"
+      ],
+      "format": [
+        "CD",
+        "Mixed"
+      ],
+      "genre": [
+        "Electronic"
+      ],
+      "style": [
+        "House",
+        "Deep House",
+        "Garage House"
+      ]
+    },
+    {
+      "id": 70822,
+      "type": "release",
+      "title": "Kerri Chandler - Kaoz Theory (The Essential Kerri Chandler)",
+      "year": "1998",
+      "label": [
+        "Harmless",
+        "Harmless Recordings",
+        "Harmless Recordings",
+        "Music Collection International Ltd.",
+        "VCI Plc",
+        "Disc"
+      ],
+      "format": [
+        "Vinyl",
+        "12\"",
+        "Compilation"
+      ],
+      "genre": [
+        "Electronic"
+      ],
+      "style": [
+        "House",
+        "Deep House",
+        "Garage House"
+      ]
+    },
+    {
+      "id": 223960,
+      "type": "master",
+      "title": "Kerri Chandler & Dennis Ferrer - Soul Heaven Presents Kerri Chandler & Dennis Ferrer",
+      "year": "2006",
+      "label": [
+        "Soul Heaven Records",
+        "Soul Heaven Records",
+        "Soul Heaven Records",
+        "Lynic",
+        "Lynic",
+        "Lynic"
+      ],
+      "format": [
+        "CD",
+        "Mixed",
+        "CD",
+        "Compilation"
+      ],
+      "genre": [
+        "Electronic"
+      ],
+      "style": [
+        "House",
+        "Deep House",
+        "Garage House"
+      ]
+    }
+  ]
+}

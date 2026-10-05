@@ -11,6 +11,7 @@ import requests
 
 from beatport_collector import http_client
 from beatport_collector.http_client import BeatportClient
+from beatport_collector.session import BeatportToken
 
 
 class _Resp:
@@ -210,3 +211,34 @@ def test_degenerate_retry_budget_fails_fast(monkeypatch):
     client = BeatportClient(token="t", min_gap=0.0, max_retries=-1)
     with pytest.raises(RuntimeError, match="exhausted"):
         client.get("https://x/a")
+
+
+def test_non_str_token_fails_before_the_network(monkeypatch):
+    """A BeatportToken handed in by mistake raises locally, not as a 401."""
+
+    def boom(*a, **k):
+        raise AssertionError("client.get ran before the token was validated")
+
+    monkeypatch.setattr(http_client.requests, "get", boom)
+    # A placeholder, not a credential: the assertion below is that this string
+    # never reaches the error message.
+    placeholder = "not-a-real-token"
+    wrong_type = BeatportToken(access_token=placeholder)
+    with pytest.raises(TypeError) as exc:
+        BeatportClient(token=wrong_type)  # type: ignore
+    assert "token must be str, got BeatportToken" in str(exc.value)
+    assert placeholder not in str(exc.value)
+
+
+def test_str_token_still_authenticates(monkeypatch):
+    """A plain str token constructs and sends the same Bearer header as before."""
+    seen: list = []
+
+    def fake_get(url, headers=None, timeout=None):
+        seen.append(headers)
+        return _Resp()
+
+    monkeypatch.setattr(http_client.requests, "get", fake_get)
+    client = BeatportClient(token="abc123", min_gap=0.0, max_retries=0)
+    assert client.get("https://x/a") == {"ok": True}
+    assert seen[0]["Authorization"] == "Bearer abc123"

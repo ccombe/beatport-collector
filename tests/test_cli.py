@@ -160,6 +160,26 @@ class TestEnrich:
         assert a.overwrite is False
         assert a.art_overwrite is False
         assert a.delay == 2.0
+        assert a.allow_drives is None
+
+
+class TestAllowDrivesFlag:
+    """The flag exists on every subcommand that writes tags, and nowhere else."""
+
+    @pytest.mark.parametrize("cmd", ["enrich", "batch", "apply"])
+    def test_writing_commands_default_to_no_opt_in(self, cmd: str) -> None:
+        a = parse([cmd, "x"])
+        assert a.allow_drives is None
+
+    def test_flag_parses(self) -> None:
+        a = parse(["enrich", "G:\\x.mp3", "--apply", "--allow-drives", "g,C"])
+        assert a.allow_drives == "g,C"
+        assert a.apply is True
+
+    @pytest.mark.parametrize("cmd", ["scan", "catalog", "playlist", "scan-tags"])
+    def test_read_only_commands_do_not_take_it(self, cmd: str) -> None:
+        with pytest.raises(SystemExit):
+            parse([cmd, "x", "--allow-drives", "g"])
 
 
 class TestBatchApply:
