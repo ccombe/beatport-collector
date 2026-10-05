@@ -481,3 +481,62 @@ class TestGatesAreIndividuallyTestable:
             lambda *a, **k: (_ for _ in ()).throw(requests.HTTPError("404")),
         )
         assert discogs._fetch_release(1) is None
+
+    def test_length_tolerance_is_inclusive_at_the_exact_edge(self) -> None:
+        """A track exactly `tolerance_ms` long must still match.
+
+        Found by mutation testing: `<=` weakened to `<` survived, because the
+        other boundary tests only probed inside and outside, never exactly on
+        the edge. Inclusive is the deliberate contract -- the tolerance is how
+        much difference we tolerate, not a strict bound.
+        """
+        release = {"tracklist": [{"title": "T", "duration": "5:00"}]}  # 300_000ms
+        assert discogs._length_gate(release, 310_000, 10_000) is True  # exactly 10s
+        assert discogs._length_gate(release, 290_000, 10_000) is True  # exactly -10s
+        assert discogs._length_gate(release, 310_001, 10_000) is False  # 1ms past
+
+
+class TestToTrack:
+    """The shape the shared fallback writer depends on.
+
+    Asserted on the real object rather than through a search, because this is
+    the contract `_write_from` relies on: if a field is dropped here the tag
+    silently stops being written.
+    """
+
+    def test_carries_every_field_the_writer_needs(self) -> None:
+        m = discogs.DiscogsMatch(
+            title="T",
+            artist="A",
+            release="An Album",
+            date="2023-03-20",
+            label="L",
+            genre="Tech House",
+            artwork_url="http://img",
+        )
+        t = m.to_track("file_artist", "file_title")
+        assert (t.name, t.artists) == ("T", "A")
+        assert (t.release_name, t.publish_date, t.label) == (
+            "An Album",
+            "2023-03-20",
+            "L",
+        )
+        assert t.genre == "Tech House"
+        assert t.artwork_url == "http://img"
+
+    def test_falls_back_to_the_file_tags(self) -> None:
+        """A source that omits the name must not blank the file's own."""
+        t = discogs.DiscogsMatch(release="R").to_track("File Artist", "File Title")
+        assert t.name == "File Title"
+        assert t.artists == "File Artist"
+
+    def test_musicbrainz_match_satisfies_the_same_contract(self) -> None:
+        """Both sources must expose to_track, or _write_from is not general."""
+        from beatport_collector.musicbrainz import MBMatch
+
+        t = MBMatch(
+            title="T", artist="A", release="R", date="2020", label="L"
+        ).to_track("fa", "ft")
+        assert (t.name, t.release_name, t.publish_date) == ("T", "R", "2020")
+        # MusicBrainz never supplies genre; it must not invent one.
+        assert t.genre == ""

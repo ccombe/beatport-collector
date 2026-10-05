@@ -28,6 +28,7 @@ from beatport_collector.enrich import (
     enrich_one,
     guess_from_filename,
 )
+from beatport_collector.musicbrainz import MBMatch
 from beatport_collector.tagger import TagReport
 
 
@@ -363,7 +364,9 @@ def test_apply_musicbrainz_empty_result(monkeypatch) -> None:
 def test_apply_musicbrainz_resolves_match(monkeypatch) -> None:
     import beatport_collector.musicbrainz as mb_mod
 
-    mb = SimpleNamespace(
+    # A real MBMatch, not a stand-in: the fallback writer now depends on its
+    # to_track(), and a duck-typed namespace would stop satisfying the contract.
+    mb = MBMatch(
         release="Rel", date="2023-05-06", label="Lab", title="Song", artist="A"
     )
     monkeypatch.setattr(mb_mod, "search_recording", lambda *a, **k: mb)

@@ -20,6 +20,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Protocol
 
 import requests
 
@@ -392,6 +393,55 @@ class WriteMode:
     art_overwrite: bool = False
 
 
+class _Sourced(Protocol):
+    """What a fallback source must hand back to be written.
+
+    Not a base class: the two sources share this shape and nothing else. Their
+    gating is deliberately *not* unified -- a MusicBrainz relevance score and a
+    Discogs tracklist length have nothing in common, and pretending otherwise
+    would hide the part that actually decides correctness.
+    """
+
+    def to_track(self, artist: str, title: str) -> catalog_api.CatalogTrack: ...
+
+
+def _unresolved(path: str, artist: str, title: str, reason: str) -> EnrichResult:
+    return EnrichResult(
+        path, artist, title, status=_status_or(reason, EnrichStatus.NO_CANDIDATES)
+    )
+
+
+def _write_from(
+    path: str,
+    artist: str,
+    title: str,
+    match: _Sourced,
+    mode: WriteMode,
+    source: str,
+    cache: bool = False,
+) -> EnrichResult:
+    """Plan and optionally write a source's match. The one place this happens.
+
+    Both fallbacks did this by hand, and the duplication is how they drift: they
+    had to agree on track construction, on the write flags, and on tagging the
+    result with its source.
+    """
+    track = match.to_track(artist, title)
+    result = apply_match(
+        path,
+        artist,
+        title,
+        track,
+        dry_run=mode.dry_run,
+        overwrite=mode.overwrite,
+        art_overwrite=mode.art_overwrite,
+    )
+    result.source = source
+    if cache:
+        result.snapshot = track.to_cache()
+    return result
+
+
 def _apply_musicbrainz(
     path: str,
     artist: str,
@@ -400,34 +450,15 @@ def _apply_musicbrainz(
     reason: str,
     mode: WriteMode,
 ) -> EnrichResult:
+    """First fallback. Release, date and label only -- never genre/BPM/key."""
     from beatport_collector import musicbrainz
 
     mb = musicbrainz.search_recording(artist, title, duration_ms=duration_ms)
     if mb is None or not (mb.release or mb.date or mb.label):
-        return EnrichResult(
-            path, artist, title, status=_status_or(reason, EnrichStatus.NO_CANDIDATES)
-        )
-    mb_track = catalog_api.CatalogTrack(
-        id=0,
-        name=mb.title or title,
-        artists=mb.artist or artist,
-        release_name=mb.release,
-        publish_date=mb.date,
-        label=mb.label,
-    )
-    mb_result = apply_match(
-        path,
-        artist,
-        title,
-        mb_track,
-        dry_run=mode.dry_run,
-        overwrite=mode.overwrite,
-        art_overwrite=mode.art_overwrite,
-    )
-    mb_result.source = "musicbrainz"
-    mb_result.snapshot = mb_track.to_cache()
-    mb_result.beatport_date = mb.date
-    return mb_result
+        return _unresolved(path, artist, title, reason)
+    result = _write_from(path, artist, title, mb, mode, "musicbrainz", cache=True)
+    result.beatport_date = mb.date
+    return result
 
 
 def _apply_discogs(
@@ -440,41 +471,17 @@ def _apply_discogs(
 ) -> EnrichResult:
     """Second fallback: Discogs, which unlike MusicBrainz can supply genre.
 
-    A no-op returning an unchanged result when no token is configured, so a
-    machine without a Discogs account behaves exactly as if this did not exist.
+    A no-op when no token is configured, so a machine without a Discogs account
+    behaves exactly as if this did not exist.
     """
     from beatport_collector import discogs
 
     if not discogs.is_available():
-        return EnrichResult(
-            path, artist, title, status=_status_or(reason, EnrichStatus.NO_CANDIDATES)
-        )
+        return _unresolved(path, artist, title, reason)
     match = discogs.search_release(artist, title, duration_ms=duration_ms)
     if match is None or not (match.release or match.date or match.genre):
-        return EnrichResult(
-            path, artist, title, status=_status_or(reason, EnrichStatus.NO_CANDIDATES)
-        )
-    track = catalog_api.CatalogTrack(
-        id=0,
-        name=match.title or title,
-        artists=match.artist or artist,
-        release_name=match.release,
-        publish_date=match.date,
-        label=match.label,
-        genre=match.genre,
-        artwork_url=match.artwork_url,
-    )
-    result = apply_match(
-        path,
-        artist,
-        title,
-        track,
-        dry_run=mode.dry_run,
-        overwrite=mode.overwrite,
-        art_overwrite=mode.art_overwrite,
-    )
-    result.source = "discogs"
-    return result
+        return _unresolved(path, artist, title, reason)
+    return _write_from(path, artist, title, match, mode, "discogs")
 
 
 def enrich_one(

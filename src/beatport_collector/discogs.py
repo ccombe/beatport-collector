@@ -35,9 +35,12 @@ import threading
 import time
 import urllib.parse
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import requests
+
+if TYPE_CHECKING:
+    from beatport_collector.catalog_api import CatalogTrack
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +75,25 @@ class DiscogsMatch:
     genre: str = ""
     artwork_url: str = ""
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
+
+    def to_track(self, artist: str, title: str) -> CatalogTrack:
+        """As a CatalogTrack, for the fallback writer in enrich.
+
+        Imported here rather than at module scope to keep this module's imports
+        to the stdlib plus requests.
+        """
+        from beatport_collector.catalog_api import CatalogTrack
+
+        return CatalogTrack(
+            id=0,
+            name=self.title or title,
+            artists=self.artist or artist,
+            release_name=self.release,
+            publish_date=self.date,
+            label=self.label,
+            genre=self.genre,
+            artwork_url=self.artwork_url,
+        )
 
 
 def _token() -> str:
