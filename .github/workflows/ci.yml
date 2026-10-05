@@ -47,3 +47,9 @@ jobs:
         # Tests needing a real music library or purchase CSV skip cleanly
         # when BPC_LIBRARY_DIR is unset, so this is self-contained.
         run: uv run pytest -q
+
+      - name: Coverage (100% floor)
+        # README states 100% line coverage as a floor. pytest-cov reads
+        # fail_under from [tool.coverage.report] and exits non-zero below it,
+        # so this fails the job rather than just printing a table.
+        run: uv run pytest -q --cov
