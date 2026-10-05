@@ -236,3 +236,28 @@ class _Query:
     def has_fuzzy_keys(self) -> bool:
         """Album + title + artist must all be present for strategies 9-13."""
         return bool(self.album and self.clean and self.artist)
+
+
+#: Trailing parenthesised mix: 'Shiver (Cassian Extended Remix)'.
+#:
+#: Both inner runs are ambiguous (lazy base, greedy mix), so both are capped
+#: and the whitespace run is anchored -- the same two guards the rest of this
+#: module carries. Uncapped it measured 4x per doubling (1.4s on 16k parens),
+#: i.e. quadratic. See tests/test_regex_guards.py.
+MIX_PAREN = re.compile(
+    r"^(?P<base>.{0,120}?)(?<!\s)\s*[\(\[](?P<mix>[^)\]]{1,120})[)\]]\s*$"
+)
+
+
+def declared_mix(title: str) -> str:
+    """The mix name a title states, or '' when it states none.
+
+    'Shiver (Cassian Extended Remix)' -> 'Cassian Extended Remix'
+    'Do It Like Me'                  -> ''
+
+    Distinct from :func:`clean_title`, which *discards* the mix. Comparing a
+    catalog mix against a cleaned title proves nothing: clean_title turns
+    'Extended Remix' into '' and '' is contained in everything.
+    """
+    m = MIX_PAREN.match((title or "").strip())
+    return m.group("mix").strip() if m else ""

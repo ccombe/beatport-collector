@@ -608,3 +608,191 @@ class TestSearchVariants:
         assert _clean_artist("Audiojack 128") == "Audiojack"
         assert _clean_artist("Audiojack") == "Audiojack"
         assert _clean_artist("") == ""
+
+
+class TestSplitArtists:
+    @pytest.mark.parametrize(
+        ("raw", "want"),
+        [
+            ("Mrodriguez & Ian Justiniani", ["Mrodriguez", "Ian Justiniani"]),
+            ("Solu Music, Kimblee", ["Solu Music", "Kimblee"]),
+            ("TECH IT DEEP & Davide T", ["TECH IT DEEP", "Davide T"]),
+            (
+                "Solomun Feat. Jamie Foxx, Amp Fiddler",
+                ["Solomun", "Jamie Foxx", "Amp Fiddler"],
+            ),
+            ("Safar x Skrillex & Ahadadream", ["Safar", "Skrillex", "Ahadadream"]),
+            ("Nick Curly", ["Nick Curly"]),
+            ("", []),
+        ],
+    )
+    def test_splits_on_joiners_and_featuring(self, raw: str, want: list[str]) -> None:
+        from beatport_collector.enrich import split_artists
+
+        assert split_artists(raw) == want
+
+    @pytest.mark.parametrize(
+        ("raw", "want"),
+        [
+            ("Simon & Black", ["Simon", "Black"]),
+            ("Jay Town", ["Jay Town"]),
+            # Substring 'feat'/'vs' inside a name must not be read as a joiner.
+            ("Defeater", ["Defeater"]),
+            ("Vsauce", ["Vsauce"]),
+            # A bare slash is a band name; only a padded one separates.
+            ("AC/DC", ["AC/DC"]),
+            ("Dom & Roland / Amon Tobin", ["Dom", "Roland", "Amon Tobin"]),
+        ],
+    )
+    def test_keeps_real_names_intact(self, raw: str, want: list[str]) -> None:
+        from beatport_collector.enrich import split_artists
+
+        assert split_artists(raw) == want
+
+
+class TestMultiArtistEscalation:
+    """Loose per-artist queries only fire after the exact variants fail, and
+    their candidates must clear the title gate as well as duration."""
+
+    def _fake_search(self, monkeypatch, hits: dict[tuple[str, str], list]):
+        calls: list[tuple[str, str, str]] = []
+
+        def search(_token, artist, title, mix_name="", **kw):
+            calls.append((artist, title, mix_name))
+            return hits.get((artist, title), [])
+
+        monkeypatch.setattr(enrich.catalog_api, "search_tracks", search)
+        return calls
+
+    @staticmethod
+    def _saw(calls, artist, title):
+        return any((a, t) == (artist, title) for a, t, _m in calls)
+
+    def test_escalates_to_each_artist_and_gates(self, monkeypatch) -> None:
+        from beatport_collector.catalog_api import CatalogTrack
+
+        right = CatalogTrack(id=7, name="La 42", artists="A, B", length_ms=300_000)
+        calls = self._fake_search(monkeypatch, {("Mrodriguez", "La 42"): [right]})
+        cands = enrich._search_candidates(
+            "tok", "Mrodriguez & Ian Justiniani", "La 42", "La 42", "", 0, 300_000
+        )
+        assert [c.id for c in cands] == [7]
+        assert self._saw(calls, "Mrodriguez", "La 42")
+
+    def test_wrong_title_same_length_is_rejected(self, monkeypatch) -> None:
+        """The false positive measured on the real API.
+
+        Searching artist_name="Decius" (scraped from a swapped-tag title)
+        returned an unrelated track that happened to be within 7s. Duration
+        alone would have written it as a confident match.
+        """
+        from beatport_collector.catalog_api import CatalogTrack
+
+        wrong = CatalogTrack(id=8, name="Felt Tip", artists="A", length_ms=300_000)
+        calls = self._fake_search(
+            monkeypatch, {("Decius", "Decius, Lias Saoudi"): [wrong]}
+        )
+        cands = enrich._search_candidates(
+            "tok",
+            "Queen Of 14th St",
+            "Decius, Lias Saoudi (Original Mix) 124",
+            "Decius, Lias Saoudi",
+            "",
+            0,
+            300_000,
+        )
+        assert self._saw(calls, "Decius", "Decius, Lias Saoudi")  # it was tried
+        assert cands == []  # and rejected
+
+    def test_exact_variant_short_circuits_before_escalation(self, monkeypatch) -> None:
+        from beatport_collector.catalog_api import CatalogTrack
+
+        exact = CatalogTrack(
+            id=9, name="Keep It Up", artists="Nick Curly", length_ms=300_000
+        )
+        calls = self._fake_search(monkeypatch, {("Nick Curly", "Keep It Up"): [exact]})
+        cands = enrich._search_candidates(
+            "tok", "Nick Curly", "Keep It Up", "Keep It Up", "Original Mix", 0, 300_000
+        )
+        assert [c.id for c in cands] == [9]
+        assert len(calls) == 1  # no per-artist queries needed
+
+    def test_rejected_candidate_cannot_win_the_final_pick(self, monkeypatch) -> None:
+        """The gate must filter the list, not merely veto the escalation.
+
+        Returning the ungated list let the rejected candidate win the caller's
+        re-pick: 'Feel Good Inc.' came back as the *Instrumental*, which shares
+        the original's length exactly. Both are in the same result set, so a
+        single-candidate fake could never have caught this.
+        """
+        from beatport_collector.catalog_api import CatalogTrack
+
+        instrumental = CatalogTrack(
+            id=1,
+            name="Feel Good Inc.",
+            mix_name="Instrumental",
+            artists="Gorillaz",
+            length_ms=222_000,
+        )
+        original = CatalogTrack(
+            id=2,
+            name="Feel Good Inc.",
+            mix_name="",
+            artists="Gorillaz",
+            length_ms=222_000,
+        )
+        self._fake_search(
+            monkeypatch, {("Gorillaz", "Feel Good Inc."): [instrumental, original]}
+        )
+        cands = enrich._search_candidates(
+            "tok",
+            "Gorillaz feat. De La Soul",
+            "Feel Good Inc.",
+            "Feel Good Inc.",
+            "",
+            0,
+            222_000,
+        )
+        assert [c.id for c in cands] == [2]
+
+    def test_all_rejected_yields_empty(self, monkeypatch) -> None:
+        from beatport_collector.catalog_api import CatalogTrack
+
+        stem = CatalogTrack(
+            id=1,
+            name="Feel Good Inc.",
+            mix_name="Instrumental",
+            artists="Gorillaz",
+            length_ms=222_000,
+        )
+        self._fake_search(monkeypatch, {("Gorillaz", "Feel Good Inc."): [stem]})
+        cands = enrich._search_candidates(
+            "tok",
+            "Gorillaz feat. De La Soul",
+            "Feel Good Inc.",
+            "Feel Good Inc.",
+            "",
+            0,
+            222_000,
+        )
+        assert cands == []
+
+    def test_no_duration_keeps_old_empty_only_escalation(self, monkeypatch) -> None:
+        from beatport_collector.catalog_api import CatalogTrack
+
+        # Nothing in tolerance: without a duration the old empty-only rule applies.
+        wrong = CatalogTrack(id=10, name="Felt Tip", artists="A", length_ms=999_000)
+        calls = self._fake_search(
+            monkeypatch, {("Queen Of 14th St", "Decius, Lias Saoudi"): [wrong]}
+        )
+        cands = enrich._search_candidates(
+            "tok",
+            "Queen Of 14th St",
+            "Decius, Lias Saoudi (Original Mix) 124",
+            "Decius, Lias Saoudi",
+            "",
+            0,
+        )
+        # No duration to judge by, so the first non-empty result stands.
+        assert [c.id for c in cands] == [10]
+        assert len(calls) == 1

@@ -24,6 +24,7 @@ from enum import StrEnum
 import requests
 
 from beatport_collector import catalog_api, tagger
+from beatport_collector.matching import MIX_PAREN
 from beatport_collector.paths import (  # noqa: F401
     windows_to_wsl,
     wsl_to_windows,
@@ -33,12 +34,10 @@ from beatport_collector.tagger import TagReport
 
 logger = logging.getLogger(__name__)
 
-MIX_RE = re.compile(r"^(?P<base>.*?)\s*[\(\[](?P<mix>[^\)\]]+)[\)\]]\s*$")
-
 
 def split_mix(title: str) -> tuple[str, str]:
     """Split 'Mover (Extended Mix)' -> ('Mover', 'Extended Mix')."""
-    m = MIX_RE.match(title.strip())
+    m = MIX_PAREN.match(title.strip())
     if not m:
         return title.strip(), ""
     return m.group("base").strip(), m.group("mix").strip()
@@ -203,6 +202,34 @@ def _clean_artist(artist: str) -> str:
     return cleaned or artist
 
 
+#: Separators that mean "more than one artist". Beatport indexes each artist
+#: separately, so a joined string never matches its ``artist_name`` filter.
+#:
+#: Deliberately *not* the same list as ``matching._parse_artists``, and the two
+#: should not be merged. Those separators build a comparison key, so being
+#: liberal is free. These build an API query, where a wrongly split name means
+#: a search that can only return nothing -- hence word-boundary anchoring and no
+#: bare ``feat``/``vs`` substring replacement, so ``Defeater`` survives intact.
+ARTIST_SPLIT_RE = re.compile(
+    r"\s*(?:,|;|&|\+|\bx\b|\bvs\.?\b|\b(?:feat|ft|featuring)\.?)\s+"
+    # A slash only counts when padded: 'AC/DC' is a band, 'Dom & Roland / Amon
+    # Tobin' is two. Bare '/' is never a separator here.
+    r"|\s+/\s+",
+    re.IGNORECASE,
+)
+#: Trailing '(feat. X)' / '[ft. X]' in a title: the featured act is an artist,
+#: not part of the track name.
+FEAT_SUFFIX_RE = re.compile(
+    r"\s*[\(\[]?\s*\b(?:feat|ft|featuring)\b\.?\s+[^)\]]*[\)\]]?\s*$", re.IGNORECASE
+)
+
+
+def split_artists(artist: str) -> list[str]:
+    """'A & B' -> ['A', 'B']. Single artists come back as one element."""
+    parts = [p.strip(" -_,") for p in ARTIST_SPLIT_RE.split(artist or "")]
+    return [p for p in parts if p]
+
+
 def _search_candidates(
     token: str,
     artist: str,
@@ -210,17 +237,65 @@ def _search_candidates(
     base: str,
     mix: str,
     delay: float,
+    duration_ms: int | None = None,
 ) -> list[catalog_api.CatalogTrack]:
-    """Ordered search variants, first non-empty wins.
+    """Ordered search variants, first *usable* one wins.
 
     Exact, then full title, then swapped roles (files with artist/title
-    reversed — the swap fires even without a mix name, unlike before).
-    Each distinct query runs once; duration gating downstream means a
-    wrong guess cannot stick.
+    reversed — the swap fires even without a mix name, unlike before). Each
+    distinct query runs once.
+
+    Only when those all come back unusable does it escalate to the
+    multi-artist variants: joined artist names ('A & B', 'A feat. B', 'A x B')
+    never match Beatport's per-artist ``artist_name`` filter, so each artist is
+    tried on its own, plus the artists hiding in the title of a swapped-tag
+    file. Those queries are loose, so their candidates must pass the title
+    gate as well as duration — without it a same-length track by a different
+    artist gets written as a confident match.
+
+    *duration_ms* is what makes 'unusable' decidable; without it escalation
+    triggers only on an empty result, as before.
     """
     artist = _clean_artist(artist)
     full = clean_query(title, artist)
     swap_base, swap_mix = split_mix(full)
+
+    def passing(
+        cands: list[catalog_api.CatalogTrack], gate_title: str = ""
+    ) -> list[catalog_api.CatalogTrack]:
+        """Candidates clearing every gate, or [] when none do.
+
+        Returns the filtered list, not a bool: the caller re-picks the oldest
+        survivor, so handing back the whole list would let a candidate this
+        gate just rejected win that pick.
+        """
+        if not cands:
+            return []
+        if not gate_title:
+            # Server-side artist+name already constrain these queries; keep the
+            # historical duration-only rule.
+            return (
+                cands
+                if duration_ms is None
+                else catalog_api.within_duration(cands, duration_ms)
+            )
+        return catalog_api.title_agreeing(cands, gate_title, duration_ms)
+
+    # Escalation queries: each artist alone, and the same with a featuring
+    # suffix stripped off the title. Ordered so the likeliest lead artist is
+    # tried before the collaborators.
+    names = split_artists(artist) or [artist]
+    no_feat = FEAT_SUFFIX_RE.sub("", full).strip()
+    no_feat_base, no_feat_mix = split_mix(no_feat)
+    loose: list[tuple[str, str, str]] = [(n, base, mix) for n in names]
+    if no_feat and no_feat != full:
+        loose += [(n, no_feat_base, no_feat_mix) for n in names]
+    # A title only hides artist names if it splits in two or more. A
+    # one-element split would just re-query the whole title as an artist name.
+    in_title = split_artists(title)
+    if len(in_title) > 1:
+        loose += [(n, base, "") for n in in_title]
+
     seen: set[tuple[str, str, str]] = set()
     for search_artist, search_title, search_mix in (
         (artist, base, mix),
@@ -234,8 +309,22 @@ def _search_candidates(
         cands = catalog_api.search_tracks(
             token, search_artist, search_title, mix_name=search_mix, delay=delay
         )
-        if cands:
-            return cands
+        good = passing(cands)
+        if good:
+            return good
+
+    for search_artist, search_title, search_mix in loose:
+        key = (search_artist, search_title, search_mix)
+        if key in seen:
+            continue
+        seen.add(key)
+        cands = catalog_api.search_tracks(
+            token, search_artist, search_title, mix_name=search_mix, delay=delay
+        )
+        # Loose query: title and duration both required.
+        good = passing(cands, gate_title=search_title)
+        if good:
+            return good
     return []
 
 
@@ -324,7 +413,9 @@ def enrich_one(
     track_id, _ = guess_beatport_id(path)
     direct = _fetch_direct(token, track_id, duration_ms)
     try:
-        cands = _search_candidates(token, artist, title, base, mix, delay)
+        cands = _search_candidates(
+            token, artist, title, base, mix, delay, duration_ms=duration_ms
+        )
         if direct is not None:
             best, reason = direct, "match"
         else:

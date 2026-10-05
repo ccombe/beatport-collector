@@ -172,3 +172,46 @@ def test_clean_title_is_total_on_hostile_input() -> None:
             assert isinstance(out, str)
             assert "(" not in out
             assert ")" not in out
+
+
+class TestMixParen:
+    r"""MIX_PAREN came from enrich.py and was moved here, quadratic intact.
+
+    Both inner runs are ambiguous, so it carries the module's two guards:
+    ``(?<!\s)`` on the whitespace run and a cap on each ambiguous run. Uncapped
+    it measured 4x per doubling (1.4s on 16k parens). Asserted structurally,
+    for the reason given in this module's docstring.
+    """
+
+    def test_ambiguous_runs_are_capped(self) -> None:
+        from beatport_collector.matching import MIX_PAREN
+
+        pattern = MIX_PAREN.pattern
+        assert "(?<!" in pattern, "leading whitespace run must be anchored"
+        assert ".{0,120}?" in pattern, "lazy base run must be capped"
+        assert "{1,120}" in pattern, "greedy mix run must be capped"
+        # An uncapped ambiguous run is exactly what regressed.
+        assert ".*?" not in pattern
+        assert r"[^)\]]+" not in pattern
+
+    def test_extracts_the_mix(self) -> None:
+        from beatport_collector.matching import declared_mix
+
+        assert (
+            declared_mix("Shiver (Cassian Extended Remix)") == "Cassian Extended Remix"
+        )
+        assert declared_mix("Mover [Extended Mix]") == "Extended Mix"
+        assert declared_mix("Do It Like Me") == ""
+
+    def test_total_on_hostile_input(self) -> None:
+        from beatport_collector.matching import declared_mix
+
+        for n in (1, 50, 5000):
+            for s in ("(" * n, "[" * n + "mix" * n, "(" * n + ")" * n, " " * n + "(x)"):
+                assert isinstance(declared_mix(s), str)
+
+    def test_does_not_match_a_mid_string_paren(self) -> None:
+        # 'A (B) C' names no trailing mix: that paren is part of the name.
+        from beatport_collector.matching import declared_mix
+
+        assert declared_mix("A (B) C") == ""
