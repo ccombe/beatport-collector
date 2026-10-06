@@ -37,8 +37,19 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    score_path = pathlib.Path(args.score)
-    baseline_path = pathlib.Path(args.baseline)
+    # Both paths come off the command line, so constrain them to the repo this
+    # script lives in. Overriding is useful for a local trial run; reading an
+    # arbitrary file is not, and Sonar S8707 is right that it is not.
+    root = pathlib.Path(__file__).resolve().parent.parent
+
+    def within_root(raw: str) -> pathlib.Path:
+        p = pathlib.Path(raw).resolve()
+        if not p.is_relative_to(root):
+            raise SystemExit(f"{p} is outside {root}; pass a path inside the repo")
+        return p
+
+    score_path = within_root(args.score)
+    baseline_path = within_root(args.baseline)
 
     if not score_path.exists():
         print(f"No {score_path}. The mutmut run did not produce a score.")
