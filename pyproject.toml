@@ -32,8 +32,11 @@ pytest_add_cli_args_test_selection = ["tests/"]
 # text, argparse help strings, and console banners are docs, not behaviour.
 # Returned strings that tests *do* assert (the progress line) are not print
 # statements, so they stay under mutation.
+# TOML literal string: backslashes are NOT escapes here, so the regex gets
+# them verbatim. `logger\\.\w+` would be an escaped backslash followed by any
+# char, match nothing, and silently leave every log call under mutation.
 do_not_mutate_patterns = [
-    'logger\\.\\w+',
+    'logger\.\w+',
     'help=',
     'description=',
     'metavar=',

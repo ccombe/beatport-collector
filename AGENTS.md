@@ -38,6 +38,27 @@ wsl.exe -d Ubuntu -- bash -lc 'cd ~/projects/beatport-collector && <git cmd>'
   `load_dotenv(find_dotenv(usecwd=True))`.
 - **foobar2000 serves cached tags.** Tag values are stale after a write. Truth is
   the file on disk (mutagen). Use foobar for playlist *membership* only.
+- **Qualities are `MAJOR`, not fatal.** `githubactions:S8541` fires on every `uv
+  run` in a workflow unless the command carries `--no-build`. Here that only works
+  paired with `--no-sync`, because the project installs editable and uv refuses to
+  build it under `--no-build` alone. Both flags are in `ci.yml` for that reason;
+  dropping either half turns the security gate red.
+- **SonarCloud's project key is `ccombe_beatport-collector`** even though it
+  displays as `beatport-collector`, and the project is private — every API read
+  needs the token in the Windows opencode config
+  (`mcp.sonarqube.environment.SONARQUBE_TOKEN`, note `environment`, not `env`).
+  `mcp-preflight.sh --secrets` lists which credential names are available without
+  printing values. When the Sonar gate fails, read
+  `/api/issues/search?componentKeys=…&pullRequest=N` for the rule and severity
+  rather than inferring a cause from the message — the message names the symptom,
+  not the rule.
+- **`wsl.exe -- bash -lc` mangles WSL work**: `$?` inside the string is always
+  expanded to 0, argv is glob-expanded and backslash-eaten, and heredocs truncate
+  at nested quotes. Use `wslsh '<script>'` instead.
+- **`uv` is not on the non-interactive WSL PATH** — `export PATH="$HOME/.local/bin:$PATH"`,
+  and set `UV_PROJECT_ENVIRONMENT=.venv-wsl` for the WSL venv.
+- **Scratch tagging scripts need the repo's interpreter, not bare `python`** —
+  they import `mutagen`, which only the venvs have.
 - **Two different venvs means `coverage` is missing from `.venv`.** Run coverage
   via `.venv-wsl` and redirect `COVERAGE_FILE` to `/tmp` to avoid clobbering the
   repo's `.coverage`.
@@ -56,6 +77,11 @@ wsl.exe -d Ubuntu -- bash -lc 'cd ~/projects/beatport-collector && <git cmd>'
 - **A truncated title is identity, not decoration** — it blocks matching forever.
   Only ever *extend or close* one, never replace it. Truncated titles need a
   source before they can be fixed at all.
+- **Another session may be writing this library.** The ad-hoc scripts under
+  `%TEMP%\opencode\` take an exclusive lock (`safeio.write_lock`) and record
+  `mtime` in their worklists so drift is detectable (`verify_worklist.py`). The
+  repo CLI does not take that lock, so a CLI write and a script write can still
+  collide — check for drift before a write, and record what you wrote.
 
 ## Tests
 
