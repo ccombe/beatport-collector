@@ -1,0 +1,31 @@
+{
+  "score": 70.6,
+  "killed": 5235,
+  "survived": 2182,
+  "timeout": 10,
+  "total": 7427,
+  "mutmut": "3.8.0",
+  "measured": "2026-10-06",
+  "killed_by_module": {
+    "__init__": 0,
+    "api": 92,
+    "backends": 306,
+    "batch_runner": 381,
+    "catalog": 410,
+    "catalog_api": 361,
+    "cli": 664,
+    "config": 0,
+    "discogs": 294,
+    "enrich": 459,
+    "http_client": 98,
+    "matching": 223,
+    "musicbrainz": 188,
+    "paths": 105,
+    "playlist": 337,
+    "pooling": 99,
+    "scanner": 409,
+    "session": 103,
+    "tagger": 317,
+    "types": 389
+  }
+}

@@ -29,13 +29,29 @@ jobs:
       - name: Install project
         run: uv sync --all-groups --frozen
 
+      # Same three flags, same reasons as ci.yml: --frozen so the score comes
+      # from the locked mutmut (a different mutmut version moves the kill rate,
+      # and then nobody can tell a better test suite from a different tool),
+      # --no-sync so the env is the one the sync step installed, --no-build so
+      # Sonar S8541 stays quiet. Dropping --no-sync breaks the --no-build pair.
       - name: Mutation run
-        run: uv run --group dev mutmut run --max-children 4
+        run: uv run --frozen --no-sync --no-build mutmut run --max-children 4
 
       - name: Export stats
         run: |
-          uv run --group dev mutmut export-cicd-stats
-          uv run --group dev mutmut badge --output mutation-score.json
+          uv run --frozen --no-sync --no-build mutmut export-cicd-stats
+          uv run --frozen --no-sync --no-build mutmut badge --output mutation-score.json
+
+      # Fails loudly on a drop. This changes no merge either way: the job is
+      # continue-on-error and this workflow is not a required check. What it
+      # buys is that a regression is a red step on the Monday run instead of a
+      # number in an artifact nobody opens. Making it an actual gate means
+      # dropping continue-on-error and adding it to branch protection, which is
+      # wrong while the survivor backlog is this deep — the gate would be red on
+      # its first run and get muted within the week.
+      - name: Check against baseline
+        run: |
+          uv run --frozen --no-sync --no-build python scripts/check_mutation_baseline.py
 
       - name: Upload results
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

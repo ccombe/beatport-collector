@@ -347,13 +347,25 @@ and uploads the results as an artifact; trigger one early with
 re-run that mutant by name, repeat. State lives in `mutants/` (gitignored);
 delete it to start from scratch.
 
+`mutation-baseline.json` holds the last measured score (and the per-module
+kill counts behind it). The weekly job compares the fresh score against it and
+fails on a drop of more than half a point, so a regression is a red step on the
+run rather than a number in an artifact nobody opens. It fails no merge — the
+job is `continue-on-error` and this workflow is not a required check — and it
+should stay that way while the survivor backlog is this deep: a gate red on its
+first run gets muted inside a week. Raise the baseline by killing survivors,
+never by loosening a `do_not_mutate_pattern`, and say why in the commit when you
+do.
+
 The score measures logic, not prose. `do_not_mutate_patterns` in `pyproject.toml`
 excludes log calls, argparse `help=`/`description=`/`metavar=`, and `print`
 banners, since no test asserts their wording and mutating them only produces
 survivors. Strings a test *does* assert — the progress line, error text — are
 returned rather than printed, so they stay under mutation. When you add a new
 kind of non-behavioural string, add it here rather than writing assertions
-about wording.
+about wording. These are TOML *literal* strings, so backslashes are not
+escapes: a pattern that needs one writes `logger\.\w+`, and `logger\\.\w+`
+silently matches nothing rather than erroring.
 
 Some tests need your real purchase CSV and catalog DB, and skip cleanly without
 them. The matcher parity gate (`tests/test_parity.py`) checks that the in-memory
