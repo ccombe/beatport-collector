@@ -25,7 +25,7 @@ from typing import Protocol
 import requests
 
 from beatport_collector import catalog_api, tagger
-from beatport_collector.matching import MIX_PAREN
+from beatport_collector.matching import DASH_SUFFIX, MIX_PAREN, SIMPLE_TITLE_SUFFIX
 from beatport_collector.paths import (  # noqa: F401
     windows_to_wsl,
     wsl_to_windows,
@@ -37,11 +37,22 @@ logger = logging.getLogger(__name__)
 
 
 def split_mix(title: str) -> tuple[str, str]:
-    """Split 'Mover (Extended Mix)' -> ('Mover', 'Extended Mix')."""
-    m = MIX_PAREN.match(title.strip())
-    if not m:
-        return title.strip(), ""
-    return m.group("base").strip(), m.group("mix").strip()
+    """Split 'Mover (Extended Mix)' -> ('Mover', 'Extended Mix').
+
+    Falls back to bare suffixes ('Alergias Original Mix', 'Shiver - Remix')
+    using the same keyword patterns as clean_title. Search-only: a wrong
+    split only costs recall, never writes (the written title comes from
+    the matched track).
+    """
+    text = title.strip()
+    m = MIX_PAREN.match(text)
+    if m:
+        return m.group("base").strip(), m.group("mix").strip()
+    for pat in (DASH_SUFFIX, SIMPLE_TITLE_SUFFIX):
+        m = pat.search(text)
+        if m:
+            return text[: m.start()].strip(), m.group(1).strip()
+    return text, ""
 
 
 def clean_query(title: str, artist: str = "") -> str:
