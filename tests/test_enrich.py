@@ -164,6 +164,15 @@ class TestSplitMix:
     def test_bracket(self) -> None:
         assert enrich.split_mix("Go [Original Mix]") == ("Go", "Original Mix")
 
+    def test_bare_suffix(self) -> None:
+        assert enrich.split_mix("Alergias Original Mix") == ("Alergias", "Original Mix")
+
+    def test_bare_dash_suffix(self) -> None:
+        assert enrich.split_mix("Shiver - Remix") == ("Shiver", "Remix")
+
+    def test_bare_suffix_needs_keyword(self) -> None:
+        assert enrich.split_mix("Party All The Time") == ("Party All The Time", "")
+
 
 class TestPathMapping:
     def test_windows_to_wsl(self) -> None:
