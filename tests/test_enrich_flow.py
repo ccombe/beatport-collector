@@ -164,6 +164,36 @@ def test_enrich_one_skips_non_audio_and_complete(monkeypatch, tmp_path) -> None:
     assert enrich_one("t", str(tmp_path / "ghost.mp3")) is None
 
 
+def test_enrich_one_force_reprocesses_complete(monkeypatch, tmp_path) -> None:
+    _mock_tags(monkeypatch, needs=False)
+    monkeypatch.setattr(enrich_mod, "_file_duration_ms", lambda p: 200_000)
+    track = _track()
+    monkeypatch.setattr(
+        enrich_mod.catalog_api, "search_tracks", lambda *a, **k: [track]
+    )
+    monkeypatch.setattr(
+        enrich_mod.catalog_api, "pick_best", lambda cands, **k: (track, "match")
+    )
+    plan = TagReport(path="p", updates={"genre": "House"})
+    monkeypatch.setattr(
+        enrich_mod,
+        "apply_match",
+        lambda *a, **k: EnrichResult(
+            "p",
+            "A",
+            "T",
+            EnrichStatus.MATCHED,
+            beatport_id=7,
+            beatport_date="2024-01-01",
+            plan=plan,
+        ),
+    )
+    r = enrich_one("t", _mp3(tmp_path), force=True)
+    assert r is not None
+    assert r.status == EnrichStatus.MATCHED
+    assert r.beatport_id == 7
+
+
 def test_enrich_one_skips_when_identity_unknown(monkeypatch, tmp_path) -> None:
     _mock_tags(monkeypatch, cur={})
     # Title-only filename inside a junk folder: no artist anywhere to seed on.

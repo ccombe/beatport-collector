@@ -409,6 +409,8 @@ def test_handle_enrich_reports_match_and_miss(monkeypatch, capsys) -> None:
             apply=True,
             overwrite=False,
             art_overwrite=False,
+            force=False,
+            fields=None,
             delay=0.0,
             allow_drives=None,
         )
@@ -423,8 +425,45 @@ def test_handle_enrich_reports_match_and_miss(monkeypatch, capsys) -> None:
         "dry_run": False,
         "overwrite": False,
         "art_overwrite": False,
+        "force": False,
+        "fields": None,
         "delay": 0.0,
     }
+
+
+def test_handle_enrich_parses_fields(monkeypatch) -> None:
+    import beatport_collector.enrich as enrich_mod
+
+    monkeypatch.setattr(
+        cli_mod, "oauth_login", lambda u, p: SimpleNamespace(access_token="t")
+    )
+    seen: dict = {}
+
+    def fake_enrich(token, paths, **kw):
+        seen.update(**kw)
+        return []
+
+    monkeypatch.setattr(enrich_mod, "enrich_files", fake_enrich)
+    cli_mod.handle_enrich(
+        _ns(
+            username="u",
+            password="p",
+            paths=["a.mp3"],
+            limit=5,
+            apply=False,
+            overwrite=True,
+            art_overwrite=False,
+            force=True,
+            fields="genre, album",
+            delay=0.0,
+            allow_drives=None,
+        )
+    )
+    assert seen["force"] is True
+    assert seen["fields"] == frozenset({"genre", "album"})
+    assert cli_mod._parse_fields(None) is None
+    assert cli_mod._parse_fields("") is None
+    assert cli_mod._parse_fields("genre") == frozenset({"genre"})
 
 
 def _batch_ns(**over) -> argparse.Namespace:
@@ -725,6 +764,8 @@ def test_handle_enrich_prompts_for_missing_credentials(monkeypatch) -> None:
             apply=False,
             overwrite=False,
             art_overwrite=False,
+            force=False,
+            fields=None,
             delay=0.0,
             allow_drives=None,
         )
@@ -838,6 +879,8 @@ class TestHandlerWiring:
                 apply=True,
                 overwrite=False,
                 art_overwrite=False,
+                force=False,
+                fields=None,
                 delay=0.0,
                 allow_drives=None,
             )
@@ -867,6 +910,8 @@ class TestHandlerWiring:
                 apply=True,
                 overwrite=False,
                 art_overwrite=False,
+                force=False,
+                fields=None,
                 delay=0.0,
                 allow_drives="G",
             )
@@ -896,6 +941,8 @@ class TestHandlerWiring:
                 apply=False,
                 overwrite=False,
                 art_overwrite=False,
+                force=False,
+                fields=None,
                 delay=0.0,
                 allow_drives=None,
             )

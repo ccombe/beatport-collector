@@ -32,6 +32,7 @@ import os
 import shutil
 import tempfile
 import time
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -316,13 +317,16 @@ def plan_updates(
     artwork_url: str = "",
     overwrite: bool = False,
     art_overwrite: bool = False,
+    fields: Collection[str] | None = None,
 ) -> TagPlan:
     """Compute which frames would change. Writes nothing.
 
     Additive-only: empty values and promo-junk values (URLs, trailing BPM,
     doubled mix names) count as missing and are replaced. Legit existing
     values are kept unless overwrite=True. Existing artwork is never
-    replaced unless art_overwrite=True.
+    replaced unless art_overwrite=True. Only *fields* are planned when
+    given (opt-in retargeting of wrong-but-present tags); None plans
+    every frame as before.
     """
     cur = current_tags(path)
     adapter = _backend(path)
@@ -333,6 +337,8 @@ def plan_updates(
     updates: dict[str, str] = {}
     junk_replaced: dict[str, str] = {}
     for key, new_val in beatport.items():
+        if fields is not None and key not in fields:
+            continue
         updated, junk_reason = _plan_key(cur, key, new_val, overwrite)
         if updated is not None:
             updates[key] = updated

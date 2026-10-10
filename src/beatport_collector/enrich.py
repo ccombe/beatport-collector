@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
@@ -391,6 +391,7 @@ class WriteMode:
     dry_run: bool = True
     overwrite: bool = False
     art_overwrite: bool = False
+    fields: Collection[str] | None = None
 
 
 class _Sourced(Protocol):
@@ -435,6 +436,7 @@ def _write_from(
         dry_run=mode.dry_run,
         overwrite=mode.overwrite,
         art_overwrite=mode.art_overwrite,
+        fields=mode.fields,
     )
     result.source = source
     if cache:
@@ -491,11 +493,17 @@ def enrich_one(
     overwrite: bool = False,
     art_overwrite: bool = False,
     delay: float = catalog_api.SEARCH_DELAY_SECONDS,
+    force: bool = False,
+    fields: Collection[str] | None = None,
 ) -> EnrichResult | None:
     """Enrich a single file. None = nothing to do (not MP3 / complete tags).
 
     The streaming unit of work: one call per file, so a caller can commit
     each result as it lands instead of waiting for a whole phase.
+
+    *force* reprocesses files whose tags look complete (for wrong-but-present
+    values, combined with overwrite); *fields* restricts which frames may be
+    planned, so title/artist stay untouched unless explicitly named.
 
     Pure per-file work (reads + at most 2 catalog searches + optional
     verified write) — safe to run in worker threads for distinct paths.
@@ -511,7 +519,7 @@ def enrich_one(
     if not path.lower().endswith(AUDIO_EXTENSIONS) or not os.path.exists(path):
         return None
     needs, _ = tagger.is_missing_key_tags(path)
-    if not needs:
+    if not needs and not force:
         return None
     cur = tagger.current_tags(path)
     identity = _resolve_identity(path, cur)
@@ -547,7 +555,10 @@ def enrich_one(
         # then Discogs for whatever is still missing -- it is keyed, so it is
         # skipped silently when no token is configured.
         mode = WriteMode(
-            dry_run=dry_run, overwrite=overwrite, art_overwrite=art_overwrite
+            dry_run=dry_run,
+            overwrite=overwrite,
+            art_overwrite=art_overwrite,
+            fields=fields,
         )
         result = _apply_musicbrainz(path, artist, title, duration_ms, reason, mode)
         if result.status not in _RESOLVED_STATUSES:
@@ -561,6 +572,7 @@ def enrich_one(
         dry_run=dry_run,
         overwrite=overwrite,
         art_overwrite=art_overwrite,
+        fields=fields,
     )
     if not dry_run and result.applied is not None and result.applied.error:
         # A refused write (verify failed, original untouched) must not be
@@ -577,6 +589,8 @@ def enrich_files(
     overwrite: bool = False,
     art_overwrite: bool = False,
     delay: float = catalog_api.SEARCH_DELAY_SECONDS,
+    force: bool = False,
+    fields: Collection[str] | None = None,
 ) -> list[EnrichResult]:
     """Enrich up to *limit* files missing genre/date/album (serial)."""
     results: list[EnrichResult] = []
@@ -590,6 +604,8 @@ def enrich_files(
             overwrite=overwrite,
             art_overwrite=art_overwrite,
             delay=delay,
+            force=force,
+            fields=fields,
         )
         if r is not None:
             results.append(r)
@@ -609,6 +625,8 @@ def enrich_many(
     delay: float = catalog_api.SEARCH_DELAY_SECONDS,
     workers: int = MAX_WORKERS,
     progress_cb: Callable[[EnrichResult, int, int], None] | None = None,
+    force: bool = False,
+    fields: Collection[str] | None = None,
 ) -> list[EnrichResult]:
     """Enrich many files with a bounded thread pool (default 4 workers).
 
@@ -633,6 +651,8 @@ def enrich_many(
             overwrite=overwrite,
             art_overwrite=art_overwrite,
             delay=delay,
+            force=force,
+            fields=fields,
         )
 
     def _emit(path: str, result: EnrichResult | None, abandoned: bool) -> None:
@@ -657,6 +677,7 @@ def apply_match(
     dry_run: bool = True,
     overwrite: bool = False,
     art_overwrite: bool = False,
+    fields: Collection[str] | None = None,
 ) -> EnrichResult:
     """Plan (and optionally apply) a resolved match — no catalog API calls."""
     bp_tags = best.to_tag_updates()
@@ -666,6 +687,7 @@ def apply_match(
         artwork_url=best.artwork_url,
         overwrite=overwrite,
         art_overwrite=art_overwrite,
+        fields=fields,
     )
     if dry_run:
         return EnrichResult(

@@ -467,6 +467,18 @@ def _enrich_parser(sub):
         help="Overwrite existing tags (never artwork)",
     )
     p.add_argument(
+        "--force",
+        action="store_true",
+        help="Process files even when genre/date/album are already present",
+    )
+    p.add_argument(
+        "--fields",
+        type=str,
+        default=None,
+        metavar="FIELDS",
+        help="Comma-separated frames to write (e.g. genre,album); default is all matched frames",
+    )
+    p.add_argument(
         "--art-overwrite",
         action="store_true",
         help=ART_OVERWRITE_HELP,
@@ -663,6 +675,13 @@ def handle_playlist(args: argparse.Namespace) -> None:
         print(f"  {name}: {path}")
 
 
+def _parse_fields(raw: str | None) -> frozenset[str] | None:
+    """'genre,album' -> {'genre', 'album'}. None/blank -> None (all frames)."""
+    if not raw:
+        return None
+    return frozenset(f.strip().lower() for f in raw.split(",") if f.strip())
+
+
 def handle_enrich(args: argparse.Namespace) -> None:
     from beatport_collector.enrich import enrich_files
 
@@ -679,6 +698,8 @@ def handle_enrich(args: argparse.Namespace) -> None:
         overwrite=args.overwrite,
         art_overwrite=args.art_overwrite,
         delay=args.delay,
+        force=args.force,
+        fields=_parse_fields(args.fields),
     )
     for r in results:
         if r.status == EnrichStatus.MATCHED and r.plan:
