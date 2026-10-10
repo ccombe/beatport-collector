@@ -486,6 +486,26 @@ def _apply_discogs(
     return _write_from(path, artist, title, match, mode, "discogs")
 
 
+def _apply_fallbacks(
+    path: str,
+    artist: str,
+    title: str,
+    duration_ms: int | None,
+    reason: str,
+    mode: WriteMode,
+) -> EnrichResult:
+    """Sources needing no Beatport account, cheapest first.
+
+    MusicBrainz (release/date/label only; never genre/BPM/key, its genre
+    data is too sparse to trust), then Discogs for whatever is still
+    missing -- keyed, so skipped silently when no token is configured.
+    """
+    result = _apply_musicbrainz(path, artist, title, duration_ms, reason, mode)
+    if result.status not in _RESOLVED_STATUSES:
+        result = _apply_discogs(path, artist, title, duration_ms, reason, mode)
+    return result
+
+
 def enrich_one(
     token: str,
     raw_path: str,
@@ -549,21 +569,14 @@ def enrich_one(
         logger.warning("Search failed for %s - %s: %s", artist, title, e)
         return EnrichResult(path, artist, title, status=EnrichStatus.ERROR)
     if not best:
-        # Beatport came up empty. Fall back through the sources that need no
-        # Beatport account, cheapest first: MusicBrainz (release/date/label
-        # only; never genre/BPM/key, its genre data is too sparse to trust),
-        # then Discogs for whatever is still missing -- it is keyed, so it is
-        # skipped silently when no token is configured.
+        # Beatport came up empty; fall back through the account-free sources.
         mode = WriteMode(
             dry_run=dry_run,
             overwrite=overwrite,
             art_overwrite=art_overwrite,
             fields=fields,
         )
-        result = _apply_musicbrainz(path, artist, title, duration_ms, reason, mode)
-        if result.status not in _RESOLVED_STATUSES:
-            result = _apply_discogs(path, artist, title, duration_ms, reason, mode)
-        return result
+        return _apply_fallbacks(path, artist, title, duration_ms, reason, mode)
     result = apply_match(
         path,
         artist,
