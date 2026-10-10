@@ -506,6 +506,28 @@ def _apply_fallbacks(
     return result
 
 
+def _path_needing_work(raw_path: str, force: bool) -> str | None:
+    """Usable file path, or None when there is nothing to do.
+
+    Non-audio, missing, and tag-complete files are all skipped; *force*
+    reopens the last case for wrong-but-present values.
+    """
+    path = (
+        windows_to_wsl(raw_path)
+        if (":" in raw_path or raw_path.startswith("file://"))
+        and not os.path.exists(raw_path)
+        else raw_path
+    )
+    from beatport_collector.tagger import AUDIO_EXTENSIONS
+
+    if not path.lower().endswith(AUDIO_EXTENSIONS) or not os.path.exists(path):
+        return None
+    needs, _ = tagger.is_missing_key_tags(path)
+    if not needs and not force:
+        return None
+    return path
+
+
 def enrich_one(
     token: str,
     raw_path: str,
@@ -528,18 +550,8 @@ def enrich_one(
     Pure per-file work (reads + at most 2 catalog searches + optional
     verified write) — safe to run in worker threads for distinct paths.
     """
-    path = (
-        windows_to_wsl(raw_path)
-        if (":" in raw_path or raw_path.startswith("file://"))
-        and not os.path.exists(raw_path)
-        else raw_path
-    )
-    from beatport_collector.tagger import AUDIO_EXTENSIONS
-
-    if not path.lower().endswith(AUDIO_EXTENSIONS) or not os.path.exists(path):
-        return None
-    needs, _ = tagger.is_missing_key_tags(path)
-    if not needs and not force:
+    path = _path_needing_work(raw_path, force)
+    if path is None:
         return None
     cur = tagger.current_tags(path)
     identity = _resolve_identity(path, cur)
