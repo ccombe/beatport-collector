@@ -166,6 +166,7 @@ class CatalogTrack:
         """
         return {
             "title": self.display_title(),
+            "artist": self.artists,
             "album": self.release_name,
             "genre": self.sub_genre or self.genre,
             "date": (self.publish_date or "")[:10],

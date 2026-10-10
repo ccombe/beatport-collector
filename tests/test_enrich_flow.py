@@ -164,20 +164,17 @@ def test_enrich_one_skips_non_audio_and_complete(monkeypatch, tmp_path) -> None:
     assert enrich_one("t", str(tmp_path / "ghost.mp3")) is None
 
 
-def test_enrich_one_skips_when_identity_unknown(monkeypatch, tmp_path) -> None:
-    _mock_tags(monkeypatch, cur={})
-    # Title-only filename inside a junk folder: no artist anywhere to seed on.
-    junk = tmp_path / "UnknownArtist"
-    junk.mkdir()
-    p = junk / "---.mp3"
-    p.write_bytes(b"\x00" * 64)
-    r = enrich_one("t", str(p))
+def test_enrich_one_force_reprocesses_complete(monkeypatch, tmp_path) -> None:
+    _mock_search_hit(monkeypatch, needs=False)
+    r = enrich_one("t", _mp3(tmp_path), force=True)
     assert r is not None
-    assert r.status == EnrichStatus.SKIPPED
+    assert r.status == EnrichStatus.MATCHED
+    assert r.beatport_id == 7
 
 
-def test_enrich_one_matches_via_search(monkeypatch, tmp_path) -> None:
-    _mock_tags(monkeypatch)
+def _mock_search_hit(monkeypatch, needs=True) -> CatalogTrack:
+    """Fake a Beatport search resolving to a MATCHED result; returns the track."""
+    _mock_tags(monkeypatch, needs=needs)
     monkeypatch.setattr(enrich_mod, "_file_duration_ms", lambda p: 200_000)
     track = _track()
     monkeypatch.setattr(
@@ -200,6 +197,23 @@ def test_enrich_one_matches_via_search(monkeypatch, tmp_path) -> None:
             plan=plan,
         ),
     )
+    return track
+
+
+def test_enrich_one_skips_when_identity_unknown(monkeypatch, tmp_path) -> None:
+    _mock_tags(monkeypatch, cur={})
+    # Title-only filename inside a junk folder: no artist anywhere to seed on.
+    junk = tmp_path / "UnknownArtist"
+    junk.mkdir()
+    p = junk / "---.mp3"
+    p.write_bytes(b"\x00" * 64)
+    r = enrich_one("t", str(p))
+    assert r is not None
+    assert r.status == EnrichStatus.SKIPPED
+
+
+def test_enrich_one_matches_via_search(monkeypatch, tmp_path) -> None:
+    _mock_search_hit(monkeypatch)
     r = enrich_one("t", _mp3(tmp_path))
     assert r is not None
     assert r.status == EnrichStatus.MATCHED

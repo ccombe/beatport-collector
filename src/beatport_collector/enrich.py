@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
@@ -391,6 +391,7 @@ class WriteMode:
     dry_run: bool = True
     overwrite: bool = False
     art_overwrite: bool = False
+    fields: Collection[str] | None = None
 
 
 class _Sourced(Protocol):
@@ -435,6 +436,7 @@ def _write_from(
         dry_run=mode.dry_run,
         overwrite=mode.overwrite,
         art_overwrite=mode.art_overwrite,
+        fields=mode.fields,
     )
     result.source = source
     if cache:
@@ -484,21 +486,31 @@ def _apply_discogs(
     return _write_from(path, artist, title, match, mode, "discogs")
 
 
-def enrich_one(
-    token: str,
-    raw_path: str,
-    dry_run: bool = True,
-    overwrite: bool = False,
-    art_overwrite: bool = False,
-    delay: float = catalog_api.SEARCH_DELAY_SECONDS,
-) -> EnrichResult | None:
-    """Enrich a single file. None = nothing to do (not MP3 / complete tags).
+def _apply_fallbacks(
+    path: str,
+    artist: str,
+    title: str,
+    duration_ms: int | None,
+    reason: str,
+    mode: WriteMode,
+) -> EnrichResult:
+    """Sources needing no Beatport account, cheapest first.
 
-    The streaming unit of work: one call per file, so a caller can commit
-    each result as it lands instead of waiting for a whole phase.
+    MusicBrainz (release/date/label only; never genre/BPM/key, its genre
+    data is too sparse to trust), then Discogs for whatever is still
+    missing -- keyed, so skipped silently when no token is configured.
+    """
+    result = _apply_musicbrainz(path, artist, title, duration_ms, reason, mode)
+    if result.status not in _RESOLVED_STATUSES:
+        result = _apply_discogs(path, artist, title, duration_ms, reason, mode)
+    return result
 
-    Pure per-file work (reads + at most 2 catalog searches + optional
-    verified write) — safe to run in worker threads for distinct paths.
+
+def _path_needing_work(raw_path: str, force: bool) -> str | None:
+    """Usable file path, or None when there is nothing to do.
+
+    Non-audio, missing, and tag-complete files are all skipped; *force*
+    reopens the last case for wrong-but-present values.
     """
     path = (
         windows_to_wsl(raw_path)
@@ -511,7 +523,35 @@ def enrich_one(
     if not path.lower().endswith(AUDIO_EXTENSIONS) or not os.path.exists(path):
         return None
     needs, _ = tagger.is_missing_key_tags(path)
-    if not needs:
+    if not needs and not force:
+        return None
+    return path
+
+
+def enrich_one(
+    token: str,
+    raw_path: str,
+    dry_run: bool = True,
+    overwrite: bool = False,
+    art_overwrite: bool = False,
+    delay: float = catalog_api.SEARCH_DELAY_SECONDS,
+    force: bool = False,
+    fields: Collection[str] | None = None,
+) -> EnrichResult | None:
+    """Enrich a single file. None = nothing to do (not MP3 / complete tags).
+
+    The streaming unit of work: one call per file, so a caller can commit
+    each result as it lands instead of waiting for a whole phase.
+
+    *force* reprocesses files whose tags look complete (for wrong-but-present
+    values, combined with overwrite); *fields* restricts which frames may be
+    planned, so title/artist stay untouched unless explicitly named.
+
+    Pure per-file work (reads + at most 2 catalog searches + optional
+    verified write) — safe to run in worker threads for distinct paths.
+    """
+    path = _path_needing_work(raw_path, force)
+    if path is None:
         return None
     cur = tagger.current_tags(path)
     identity = _resolve_identity(path, cur)
@@ -541,18 +581,14 @@ def enrich_one(
         logger.warning("Search failed for %s - %s: %s", artist, title, e)
         return EnrichResult(path, artist, title, status=EnrichStatus.ERROR)
     if not best:
-        # Beatport came up empty. Fall back through the sources that need no
-        # Beatport account, cheapest first: MusicBrainz (release/date/label
-        # only; never genre/BPM/key, its genre data is too sparse to trust),
-        # then Discogs for whatever is still missing -- it is keyed, so it is
-        # skipped silently when no token is configured.
+        # Beatport came up empty; fall back through the account-free sources.
         mode = WriteMode(
-            dry_run=dry_run, overwrite=overwrite, art_overwrite=art_overwrite
+            dry_run=dry_run,
+            overwrite=overwrite,
+            art_overwrite=art_overwrite,
+            fields=fields,
         )
-        result = _apply_musicbrainz(path, artist, title, duration_ms, reason, mode)
-        if result.status not in _RESOLVED_STATUSES:
-            result = _apply_discogs(path, artist, title, duration_ms, reason, mode)
-        return result
+        return _apply_fallbacks(path, artist, title, duration_ms, reason, mode)
     result = apply_match(
         path,
         artist,
@@ -561,6 +597,7 @@ def enrich_one(
         dry_run=dry_run,
         overwrite=overwrite,
         art_overwrite=art_overwrite,
+        fields=fields,
     )
     if not dry_run and result.applied is not None and result.applied.error:
         # A refused write (verify failed, original untouched) must not be
@@ -577,6 +614,8 @@ def enrich_files(
     overwrite: bool = False,
     art_overwrite: bool = False,
     delay: float = catalog_api.SEARCH_DELAY_SECONDS,
+    force: bool = False,
+    fields: Collection[str] | None = None,
 ) -> list[EnrichResult]:
     """Enrich up to *limit* files missing genre/date/album (serial)."""
     results: list[EnrichResult] = []
@@ -590,6 +629,8 @@ def enrich_files(
             overwrite=overwrite,
             art_overwrite=art_overwrite,
             delay=delay,
+            force=force,
+            fields=fields,
         )
         if r is not None:
             results.append(r)
@@ -609,6 +650,8 @@ def enrich_many(
     delay: float = catalog_api.SEARCH_DELAY_SECONDS,
     workers: int = MAX_WORKERS,
     progress_cb: Callable[[EnrichResult, int, int], None] | None = None,
+    force: bool = False,
+    fields: Collection[str] | None = None,
 ) -> list[EnrichResult]:
     """Enrich many files with a bounded thread pool (default 4 workers).
 
@@ -633,6 +676,8 @@ def enrich_many(
             overwrite=overwrite,
             art_overwrite=art_overwrite,
             delay=delay,
+            force=force,
+            fields=fields,
         )
 
     def _emit(path: str, result: EnrichResult | None, abandoned: bool) -> None:
@@ -657,6 +702,7 @@ def apply_match(
     dry_run: bool = True,
     overwrite: bool = False,
     art_overwrite: bool = False,
+    fields: Collection[str] | None = None,
 ) -> EnrichResult:
     """Plan (and optionally apply) a resolved match — no catalog API calls."""
     bp_tags = best.to_tag_updates()
@@ -666,6 +712,7 @@ def apply_match(
         artwork_url=best.artwork_url,
         overwrite=overwrite,
         art_overwrite=art_overwrite,
+        fields=fields,
     )
     if dry_run:
         return EnrichResult(

@@ -19,6 +19,18 @@ wsl.exe -d Ubuntu -- bash -lc 'cd ~/projects/beatport-collector && .venv-wsl/bin
 
 Run **Windows-side** for anything touching `C:` or `G:` — those are native
 Windows drives, so writes bypass WSL's 9P bridge. Run **WSL-side** for git.
+The in-repo Windows venv runs from any Windows shell via UNC, no second
+checkout needed (a `C:` copy drifts — tried once, deleted):
+
+```bash
+//wsl$/Ubuntu/home/chris/projects/beatport-collector/.venv/Scripts/python.exe -m beatport_collector.cli ...
+```
+
+Its editable-install pointer goes stale when the checkout moves (it once aimed
+at `C:\Users\chris\Code\...`, so `import beatport_collector` failed). Repair is
+`PYTHONPATH=//wsl$/Ubuntu/home/chris/projects/beatport-collector/src` with
+forward slashes and `MSYS2_ARG_CONV_EXCL=PYTHONPATH` — Git Bash eats backslashes
+in env vars even when quoted, and nested `powershell.exe` quoting mangles `$env:`.
 
 `git` fails from Windows on the UNC checkout (`dubious ownership`). Wrap it:
 

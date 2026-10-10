@@ -104,6 +104,12 @@ class TestToTagUpdates:
         track = CatalogTrack(id=2, name="Go", genre="House")
         assert track.to_tag_updates()["title"] == "Go"
 
+    def test_artist_mapping(self) -> None:
+        from beatport_collector.catalog_api import CatalogTrack
+
+        track = CatalogTrack(id=3, name="Go", artists="Bicep, Hammer")
+        assert track.to_tag_updates()["artist"] == "Bicep, Hammer"
+
 
 class TestPickBest:
     def test_duration_then_oldest(self) -> None:
@@ -517,6 +523,18 @@ class TestApplyMatch:
         assert result.applied.verified is True
         assert result.applied.error == ""
         assert tagger.current_tags(dst)["genre"] == "Electronica"
+
+    def test_fields_restricts_planned_frames(self, tmp_path) -> None:
+        from beatport_collector.enrich import apply_match
+
+        dst = self._sparse(tmp_path)
+        result = apply_match(
+            dst, "Bicep", "Apricots", self._track(), dry_run=True, fields={"genre"}
+        )
+        assert result.status == "matched"
+        assert result.plan is not None
+        assert set(result.plan.updates) <= {"genre"}
+        assert result.plan.updates.get("genre") == "Electronica"
 
 
 class TestSearchVariants:

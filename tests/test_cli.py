@@ -159,6 +159,8 @@ class TestEnrich:
         assert a.apply is False
         assert a.overwrite is False
         assert a.art_overwrite is False
+        assert a.force is False
+        assert a.fields is None
         assert a.delay == 2.0
         assert a.allow_drives is None
 

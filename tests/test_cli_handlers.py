@@ -371,19 +371,44 @@ def test_handle_scan_delegates(monkeypatch) -> None:
     assert seen["music_dir"] == "m"
 
 
-def test_handle_enrich_reports_match_and_miss(monkeypatch, capsys) -> None:
+def _run_enrich_handler(monkeypatch, seen, results, **ns_over):
+    """Run handle_enrich with a stubbed login and enrich_files; captures kwargs."""
     import beatport_collector.enrich as enrich_mod
 
     monkeypatch.setattr(
         cli_mod, "oauth_login", lambda u, p: SimpleNamespace(access_token="t")
     )
-    plan = TagReport(path="a.mp3", updates={"genre": "House"})
-    applied = TagReport(path="a.mp3", updates={"genre": "House"}, updated=["genre"])
-    seen: dict = {}
 
     def fake_enrich(token, paths, **kw):
         seen.update(token=token, paths=paths, **kw)
-        return [
+        return results
+
+    monkeypatch.setattr(enrich_mod, "enrich_files", fake_enrich)
+    ns = {
+        "username": "u",
+        "password": "p",
+        "paths": ["a.mp3"],
+        "limit": 5,
+        "apply": False,
+        "overwrite": False,
+        "art_overwrite": False,
+        "force": False,
+        "fields": None,
+        "delay": 0.0,
+        "allow_drives": None,
+    }
+    ns.update(ns_over)
+    return cli_mod.handle_enrich(_ns(**ns))
+
+
+def test_handle_enrich_reports_match_and_miss(monkeypatch, capsys) -> None:
+    plan = TagReport(path="a.mp3", updates={"genre": "House"})
+    applied = TagReport(path="a.mp3", updates={"genre": "House"}, updated=["genre"])
+    seen: dict = {}
+    _run_enrich_handler(
+        monkeypatch,
+        seen,
+        [
             EnrichResult(
                 path="a.mp3",
                 artist="A",
@@ -397,21 +422,9 @@ def test_handle_enrich_reports_match_and_miss(monkeypatch, capsys) -> None:
             EnrichResult(
                 path="b.mp3", artist="B", title="U", status=EnrichStatus.NO_CANDIDATES
             ),
-        ]
-
-    monkeypatch.setattr(enrich_mod, "enrich_files", fake_enrich)
-    cli_mod.handle_enrich(
-        _ns(
-            username="u",
-            password="p",
-            paths=["C:\\a.mp3", "C:\\b.mp3"],
-            limit=5,
-            apply=True,
-            overwrite=False,
-            art_overwrite=False,
-            delay=0.0,
-            allow_drives=None,
-        )
+        ],
+        paths=["C:\\a.mp3", "C:\\b.mp3"],
+        apply=True,
     )
     out = capsys.readouterr().out
     assert "MATCH A - T" in out
@@ -423,8 +436,22 @@ def test_handle_enrich_reports_match_and_miss(monkeypatch, capsys) -> None:
         "dry_run": False,
         "overwrite": False,
         "art_overwrite": False,
+        "force": False,
+        "fields": None,
         "delay": 0.0,
     }
+
+
+def test_handle_enrich_parses_fields(monkeypatch) -> None:
+    seen: dict = {}
+    _run_enrich_handler(
+        monkeypatch, seen, [], overwrite=True, force=True, fields="genre, album"
+    )
+    assert seen["force"] is True
+    assert seen["fields"] == frozenset({"genre", "album"})
+    assert cli_mod._parse_fields(None) is None
+    assert cli_mod._parse_fields("") is None
+    assert cli_mod._parse_fields("genre") == frozenset({"genre"})
 
 
 def _batch_ns(**over) -> argparse.Namespace:
@@ -725,6 +752,8 @@ def test_handle_enrich_prompts_for_missing_credentials(monkeypatch) -> None:
             apply=False,
             overwrite=False,
             art_overwrite=False,
+            force=False,
+            fields=None,
             delay=0.0,
             allow_drives=None,
         )
@@ -838,6 +867,8 @@ class TestHandlerWiring:
                 apply=True,
                 overwrite=False,
                 art_overwrite=False,
+                force=False,
+                fields=None,
                 delay=0.0,
                 allow_drives=None,
             )
@@ -867,6 +898,8 @@ class TestHandlerWiring:
                 apply=True,
                 overwrite=False,
                 art_overwrite=False,
+                force=False,
+                fields=None,
                 delay=0.0,
                 allow_drives="G",
             )
@@ -896,6 +929,8 @@ class TestHandlerWiring:
                 apply=False,
                 overwrite=False,
                 art_overwrite=False,
+                force=False,
+                fields=None,
                 delay=0.0,
                 allow_drives=None,
             )

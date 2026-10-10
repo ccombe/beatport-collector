@@ -222,6 +222,8 @@ uv run beatport-collector enrich track1.mp3 "track2.flac" --limit 5
 | `--chunk-size N` | 50 | Files per commit; bounds how much a crash costs |
 | `--max-failures N` | 15 | Stop after N consecutive failures (circuit breaker) |
 | `--overwrite` | off | Replace existing non-junk tags too |
+| `--force` | off | `enrich`: process files even when genre/date/album are already present |
+| `--fields F` | all | `enrich`: only write these frames, e.g. `--fields genre,album` |
 | `--art-overwrite` | off | Also replace existing cover art |
 | `--delay S` | 2.0 | Delay between searches (politeness) |
 | `--workers N` | 4 | Worker threads (up to 10) |
@@ -265,6 +267,11 @@ mid-write.
 Writes are additive: existing legitimate tags are never touched. Values that are
 really junk — promo URLs (`myfreemp3.vip`, `electronicfresh.com`), trailing `128`
 bitrates, doubled mix names — count as missing and get replaced.
+
+Wrong-but-present tags (e.g. a whole compilation tagged `Various`) need an
+explicit retarget: `enrich --force --overwrite --fields genre,album` re-searches
+by artist/title (album is never used for lookup) and rewrites only the named
+frames, leaving title/artist alone unless you name them too.
 
 ## How the writes are kept safe
 
