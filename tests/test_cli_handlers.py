@@ -318,13 +318,34 @@ def test_handle_playlist_guard_missing_csv(tmp_path) -> None:
 def test_handle_playlist_delegates(monkeypatch, tmp_path) -> None:
     m = tmp_path / "m.csv"
     m.write_text("x")
-    monkeypatch.setattr(cli_mod, "create_playlists", lambda *a, **k: {"a": "pl/a.m3u"})
-    cli_mod.handle_playlist(_ns(matched_csv=str(m), output_dir="pl", rekordbox=False))
+    seen: dict = {}
+
+    def fake_playlists(*a, **k):
+        seen.update(args=a, kwargs=k)
+        return {"a": "pl/a.m3u"}
+
+    monkeypatch.setattr(cli_mod, "create_playlists", fake_playlists)
+    rc = cli_mod.handle_playlist(
+        _ns(matched_csv=str(m), output_dir="pl", rekordbox=False)
+    )
+    assert seen["args"] == (str(m),)
+    assert seen["kwargs"] == {"output_dir": "pl", "rekordbox_xml": False}
+    assert rc == 0
 
 
 def test_handle_download_delegates(monkeypatch) -> None:
-    monkeypatch.setattr(cli_mod, "run_download", lambda **k: "d.csv")
-    cli_mod.handle_download(_ns(max_pages=1, delay=0.0, username="u", password="p"))
+    seen: dict = {}
+
+    def fake_download(**k):
+        seen.update(k)
+        return "d.csv"
+
+    monkeypatch.setattr(cli_mod, "run_download", fake_download)
+    rc = cli_mod.handle_download(
+        _ns(max_pages=1, delay=0.0, username="u", password="p")
+    )
+    assert seen == {"max_pages": 1, "delay": 0.0, "username": "u", "password": "p"}
+    assert rc == 0
 
 
 def test_handle_resume_guard_missing_csv() -> None:
@@ -340,10 +361,16 @@ def test_handle_resume_guard_missing_csv() -> None:
 
 
 def test_handle_resume_delegates(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr(cli_mod, "run_resume", lambda **k: "r.csv")
+    seen: dict = {}
+
+    def fake_resume(**k):
+        seen.update(k)
+        return "r.csv"
+
+    monkeypatch.setattr(cli_mod, "run_resume", fake_resume)
     existing = tmp_path / "e.csv"
     existing.write_text("x")
-    cli_mod.handle_resume(
+    rc = cli_mod.handle_resume(
         _ns(
             existing_csv=str(existing),
             max_pages=1,
@@ -352,6 +379,9 @@ def test_handle_resume_delegates(monkeypatch, tmp_path) -> None:
             password="p",
         )
     )
+    assert seen["existing_csv"] == str(existing)
+    assert seen["username"] == "u"
+    assert rc == 0
 
 
 def test_handle_scan_delegates(monkeypatch) -> None:
@@ -930,12 +960,21 @@ def test_handle_scan_tags_reports_progress(monkeypatch, tmp_path, capsys) -> Non
 def test_handle_enrich_prompts_for_missing_credentials(monkeypatch) -> None:
     import beatport_collector.enrich as enrich_mod
 
-    monkeypatch.setattr(cli_mod, "_prompt_credentials", lambda: ("u", "p"))
-    monkeypatch.setattr(
-        cli_mod, "oauth_login", lambda u, p: SimpleNamespace(access_token="t")
-    )
+    prompted: list = []
+    logged_in: list = []
+
+    def fake_prompt():
+        prompted.append(True)
+        return ("u", "p")
+
+    def fake_login(u, p):
+        logged_in.append((u, p))
+        return SimpleNamespace(access_token="t")
+
+    monkeypatch.setattr(cli_mod, "_prompt_credentials", fake_prompt)
+    monkeypatch.setattr(cli_mod, "oauth_login", fake_login)
     monkeypatch.setattr(enrich_mod, "enrich_files", lambda *a, **k: [])
-    cli_mod.handle_enrich(
+    rc = cli_mod.handle_enrich(
         _ns(
             username=None,
             password=None,
@@ -952,6 +991,9 @@ def test_handle_enrich_prompts_for_missing_credentials(monkeypatch) -> None:
             quiet=False,
         )
     )
+    assert prompted == [True]
+    assert logged_in == [("u", "p")]
+    assert rc == 0
 
 
 def test_handle_apply_limit_trims_manifest(monkeypatch) -> None:
