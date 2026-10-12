@@ -34,9 +34,10 @@ class TestSubcommandsExist:
             "enrich",
             "batch",
             "apply",
+            "doctor",
         ],
     )
-    def test_all_nine_parse(self, cmd: str) -> None:
+    def test_all_ten_parse(self, cmd: str) -> None:
         with pytest.raises(SystemExit) as exc:
             parse([cmd, "--help"])
         assert exc.value.code == 0
@@ -149,8 +150,9 @@ class TestPlaylist:
 
 class TestEnrich:
     def test_needs_paths(self) -> None:
-        with pytest.raises(SystemExit):
+        with pytest.raises(SystemExit) as exc:
             parse(["enrich"])
+        assert exc.value.code == 1
 
     def test_defaults(self) -> None:
         a = parse(["enrich", "a.mp3"])
@@ -163,6 +165,20 @@ class TestEnrich:
         assert a.fields is None
         assert a.delay == 2.0
         assert a.allow_drives is None
+        assert a.json is False
+        assert a.quiet is False
+
+    def test_json_flags_parse(self) -> None:
+        a = parse(["enrich", "a.mp3", "--json", "--force", "--fields", "genre,album"])
+        assert a.json is True
+        assert a.force is True
+        assert a.fields == "genre,album"
+
+
+class TestDoctor:
+    def test_defaults(self) -> None:
+        a = parse(["doctor"])
+        assert a.json is False
 
 
 class TestAllowDrivesFlag:

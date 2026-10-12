@@ -4,7 +4,12 @@ version = "0.1.0"
 description = "Extract your Beatport purchase history into CSV"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = ["requests>=2.31", "python-dotenv>=1.0", "mutagen>=1.47"]
+dependencies = [
+    "requests>=2.31",
+    "python-dotenv>=1.0",
+    "mutagen>=1.47",
+    "argcomplete>=3.7.2",
+]
 
 [build-system]
 requires = ["hatchling"]

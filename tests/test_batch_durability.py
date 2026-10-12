@@ -34,7 +34,7 @@ def no_network(monkeypatch):
 def _apply_stub(
     monkeypatch, statuses: dict[str, str] | None = None, log: list | None = None
 ):
-    def _apply_one(path, beatport_id, cache, art_overwrite, snapshot=None):
+    def _apply_one(path, beatport_id, cache, art_overwrite, snapshot=None, **kw):
         from beatport_collector.enrich import EnrichResult, EnrichStatus
         from beatport_collector.tagger import TagReport
 
@@ -92,7 +92,7 @@ def test_partial_progress_is_kept_when_a_chunk_explodes(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     prog = "prog.jsonl"
 
-    def flaky(path, beatport_id, cache, art_overwrite, snapshot=None):
+    def flaky(path, beatport_id, cache, art_overwrite, snapshot=None, **kw):
         from beatport_collector.enrich import EnrichResult, EnrichStatus
         from beatport_collector.tagger import TagReport
 
@@ -251,7 +251,9 @@ def test_streaming_mode_searches_and_writes_per_file(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     seen: list[tuple[str, bool]] = []
 
-    def fake_enrich_one(token, path, dry_run=True, art_overwrite=False, delay=2.0):
+    def fake_enrich_one(
+        token, path, dry_run=True, art_overwrite=False, delay=2.0, **kw
+    ):
         from beatport_collector.enrich import EnrichResult, EnrichStatus
         from beatport_collector.tagger import TagReport
 

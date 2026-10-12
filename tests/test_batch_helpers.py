@@ -304,3 +304,58 @@ def test_run_dry_chunk_streams(monkeypatch, tmp_path) -> None:
     )
     assert counts["matched"] == 2
     assert seen == ["a", "b"]  # streamed one file at a time, in order
+
+
+def test_run_forwards_force_and_fields(monkeypatch, tmp_path) -> None:
+    seen: dict = {}
+
+    def fake_many(token, paths, **kw):
+        seen.update(kw)
+        return []
+
+    monkeypatch.setattr(br_mod, "enrich_many", fake_many)
+    run(
+        [{"path": "a"}],
+        "t",
+        False,
+        str(tmp_path / "p.jsonl"),
+        workers=1,
+        force=True,
+        fields={"genre"},
+    )
+    assert seen.get("force") is True
+    assert seen.get("fields") == {"genre"}
+
+
+def test_work_item_apply_now_forwards_force_and_fields(monkeypatch) -> None:
+    seen: dict = {}
+
+    def fake_one(token, path, **kw):
+        seen.update(kw)
+        return EnrichResult(path, "A", "T", EnrichStatus.MATCHED)
+
+    monkeypatch.setattr(br_mod, "enrich_one", fake_one)
+    r = br_mod._work_item({"path": "a.mp3"}, "t", None, True, False, True, {"genre"})
+    assert seen.get("force") is True
+    assert seen.get("fields") == {"genre"}
+    assert r.status == EnrichStatus.MATCHED
+
+
+def test_apply_one_restricts_frames_to_fields(tmp_path) -> None:
+    from tests.helpers import make_mp3
+
+    dst = str(
+        make_mp3(tmp_path / "m.mp3", artist="Bicep", title="Apricots", v2_version=3)
+    )
+    track = CatalogTrack(
+        id=7,
+        name="Apricots",
+        artists="Bicep",
+        genre="Electronica",
+        release_name="R",
+        publish_date="2020-10-08",
+    )
+    result = _apply_one(dst, 7, {"7": track.to_cache()}, False, fields={"genre"})
+    assert result.status == "matched"
+    assert result.plan is not None
+    assert set(result.plan.updates) <= {"genre"}
