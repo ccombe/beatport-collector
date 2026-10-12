@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import sys
 from collections import Counter
 from types import SimpleNamespace
@@ -355,8 +356,13 @@ def test_handle_resume_delegates(monkeypatch, tmp_path) -> None:
 
 def test_handle_scan_delegates(monkeypatch) -> None:
     seen: dict = {}
-    monkeypatch.setattr(cli_mod, "run_scan_and_playlist", lambda **k: seen.update(k))
-    cli_mod.handle_scan(
+
+    def fake_scan(**k):
+        seen.update(k)
+        return ("m.csv", {"2024": "pl/2024.m3u"})
+
+    monkeypatch.setattr(cli_mod, "run_scan_and_playlist", fake_scan)
+    rc = cli_mod.handle_scan(
         _ns(
             music_dir="m",
             csv="c",
@@ -366,9 +372,12 @@ def test_handle_scan_delegates(monkeypatch) -> None:
             playlist_dir="pl",
             catalog=None,
             rekordbox=False,
+            json=False,
+            quiet=False,
         )
     )
     assert seen["music_dir"] == "m"
+    assert rc == 0
 
 
 def _run_enrich_handler(monkeypatch, seen, results, **ns_over):
@@ -396,6 +405,8 @@ def _run_enrich_handler(monkeypatch, seen, results, **ns_over):
         "fields": None,
         "delay": 0.0,
         "allow_drives": None,
+        "json": False,
+        "quiet": False,
     }
     ns.update(ns_over)
     return cli_mod.handle_enrich(_ns(**ns))
@@ -454,6 +465,175 @@ def test_handle_enrich_parses_fields(monkeypatch) -> None:
     assert cli_mod._parse_fields("genre") == frozenset({"genre"})
 
 
+# --- machine-readable output + exit codes ---
+
+
+def test_enrich_json_emits_records_and_zero(monkeypatch, capsys) -> None:
+    plan = TagReport(path="a.mp3", updates={"genre": "House"})
+    results = [
+        EnrichResult(
+            path="a.mp3",
+            artist="A",
+            title="T",
+            status=EnrichStatus.MATCHED,
+            beatport_id=5,
+            beatport_date="2024-01-01",
+            plan=plan,
+        ),
+        EnrichResult(
+            path="b.mp3", artist="B", title="U", status=EnrichStatus.NO_CANDIDATES
+        ),
+    ]
+    rc = _run_enrich_handler(monkeypatch, {}, results, json=True)
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["command"] == "enrich"
+    assert [r["status"] for r in payload["results"]] == ["matched", "no-candidates"]
+    assert payload["results"][0]["updates"] == {"genre": "House"}
+    assert payload["results"][0]["beatport_id"] == 5
+    assert rc == 0
+
+
+def test_enrich_exit_two_and_quiet_on_write_failure(monkeypatch, capsys) -> None:
+    applied = TagReport(path="a.mp3", error="verify failed, original untouched")
+    results = [
+        EnrichResult(
+            path="a.mp3",
+            artist="A",
+            title="T",
+            status=EnrichStatus.ERROR,
+            applied=applied,
+        )
+    ]
+    rc = _run_enrich_handler(monkeypatch, {}, results, quiet=True)
+    assert capsys.readouterr().out == ""
+    assert rc == 2
+
+
+def test_batch_json_reports_counts_and_zero(monkeypatch, capsys) -> None:
+    import beatport_collector.batch_runner as br_mod
+
+    monkeypatch.setattr(br_mod, "load_manifest", lambda p: [{"path": "a"}])
+    monkeypatch.setattr(cli_mod, "_get_token", lambda args: "tok")
+    monkeypatch.setattr(br_mod, "run", lambda *a, **k: Counter({"updated": 1}))
+    rc = cli_mod.handle_batch(_batch_ns(json=True))
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["command"] == "batch"
+    assert payload["updated"] == 1
+    assert payload["counts"] == {"updated": 1}
+    assert rc == 0
+
+
+def test_batch_exit_two_when_stopped_early(monkeypatch) -> None:
+    import beatport_collector.batch_runner as br_mod
+
+    monkeypatch.setattr(br_mod, "load_manifest", lambda p: [{"path": "a"}])
+    monkeypatch.setattr(cli_mod, "_get_token", lambda args: "tok")
+    monkeypatch.setattr(br_mod, "run", lambda *a, **k: Counter({"stopped-early": 1}))
+    assert cli_mod.handle_batch(_batch_ns(json=True, quiet=True)) == 2
+
+
+def test_apply_json_reports_counts(monkeypatch, capsys) -> None:
+    import beatport_collector.batch_runner as br_mod
+
+    monkeypatch.setattr(br_mod, "load_matched", lambda p: [{"path": "C:\\a"}])
+    monkeypatch.setattr(cli_mod, "_get_token", lambda args: "tok")
+    monkeypatch.setattr(br_mod, "run", lambda *a, **k: Counter({"updated": 1}))
+    rc = cli_mod.handle_apply(
+        _ns(
+            match_jsonl="m.jsonl",
+            cache="c.json",
+            progress="p.jsonl",
+            limit=0,
+            art_overwrite=False,
+            fields=None,
+            delay=0.0,
+            workers=1,
+            username="u",
+            password="p",
+            allow_drives=None,
+            json=True,
+            quiet=False,
+        )
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["command"] == "apply"
+    assert payload["updated"] == 1
+    assert rc == 0
+
+
+def test_scan_json_reports_matched_csv(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli_mod, "run_scan_and_playlist", lambda **k: ("m.csv", {"2024": "pl/2024.m3u"})
+    )
+    rc = cli_mod.handle_scan(
+        _ns(
+            music_dir="m",
+            csv="c",
+            ext=None,
+            output=None,
+            playlists=False,
+            playlist_dir="pl",
+            catalog=None,
+            rekordbox=False,
+            json=True,
+            quiet=False,
+        )
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["matched_csv"] == "m.csv"
+    assert payload["playlists"] == {"2024": "pl/2024.m3u"}
+    assert rc == 0
+
+
+def test_doctor_reports_ok_when_configured(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("BP_USERNAME", "user-ABC")
+    monkeypatch.setenv("BP_PASSWORD", "pass-XYZ")
+    monkeypatch.setenv("DISCOGS_TOKEN", "tok-123")
+    rc = cli_mod.handle_doctor(_ns(json=False))
+    out = capsys.readouterr().out
+    assert "ok beatport-credentials" in out
+    assert "user-ABC" not in out
+    assert "pass-XYZ" not in out
+    assert "tok-123" not in out
+    assert rc == 0
+
+
+def test_doctor_json_reports_failure(monkeypatch, capsys) -> None:
+    monkeypatch.delenv("BP_USERNAME", raising=False)
+    monkeypatch.delenv("BP_PASSWORD", raising=False)
+    monkeypatch.delenv("DISCOGS_TOKEN", raising=False)
+    rc = cli_mod.handle_doctor(_ns(json=True))
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["command"] == "doctor"
+    assert payload["ok"] is False
+    assert any(
+        c["name"] == "beatport-credentials" and not c["ok"] for c in payload["checks"]
+    )
+    assert rc == 2
+
+
+def test_doctor_human_failure(monkeypatch, capsys) -> None:
+    monkeypatch.delenv("BP_USERNAME", raising=False)
+    monkeypatch.delenv("BP_PASSWORD", raising=False)
+    rc = cli_mod.handle_doctor(_ns(json=False))
+    assert "FAIL beatport-credentials" in capsys.readouterr().out
+    assert rc == 2
+
+
+def test_doctor_deps_missing(monkeypatch) -> None:
+    monkeypatch.setitem(sys.modules, "mutagen", None)
+    ok, detail = cli_mod._check_deps()
+    assert ok is False
+    assert "missing" in detail
+
+
+def test_main_quiet_json_flag(monkeypatch) -> None:
+    monkeypatch.setattr(sys, "argv", ["beatport-collector", "doctor", "--json"])
+    with pytest.raises(SystemExit) as exc:
+        cli_mod.main()
+    assert exc.value.code == 2
+
+
 def _batch_ns(**over) -> argparse.Namespace:
     base = {
         "input_json": "in.json",
@@ -465,11 +645,15 @@ def _batch_ns(**over) -> argparse.Namespace:
         "max_failures": 15,
         "overwrite": False,
         "art_overwrite": False,
+        "force": False,
+        "fields": None,
         "delay": 0.0,
         "workers": 4,
         "username": "u",
         "password": "p",
         "allow_drives": None,
+        "json": False,
+        "quiet": False,
     }
     base.update(over)
     return _ns(**base)
@@ -530,11 +714,14 @@ def test_handle_apply_delegates(monkeypatch, capsys) -> None:
             progress="p.jsonl",
             limit=0,
             art_overwrite=False,
+            fields=None,
             delay=0.0,
             workers=1,
             username="u",
             password="p",
             allow_drives=None,
+            json=False,
+            quiet=False,
         )
     )
     assert seen["apply_tags"] is True
@@ -544,7 +731,7 @@ def test_handle_apply_delegates(monkeypatch, capsys) -> None:
 # --- dispatch / main ---
 
 
-def test_dispatch_routes_all_nine(monkeypatch) -> None:
+def test_dispatch_routes_all_ten(monkeypatch) -> None:
     hit: list = []
     for cmd in [
         "download",
@@ -556,6 +743,7 @@ def test_dispatch_routes_all_nine(monkeypatch) -> None:
         "enrich",
         "batch",
         "apply",
+        "doctor",
     ]:
         handler = f"handle_{cmd.replace('-', '_')}"
         monkeypatch.setattr(cli_mod, handler, lambda a, _c=cmd: hit.append(_c))
@@ -569,6 +757,7 @@ def test_dispatch_routes_all_nine(monkeypatch) -> None:
         "enrich",
         "batch",
         "apply",
+        "doctor",
     ]:
         cli_mod._dispatch(_ns(command=cmd))
     assert sorted(hit) == sorted(
@@ -582,6 +771,7 @@ def test_dispatch_routes_all_nine(monkeypatch) -> None:
             "enrich",
             "batch",
             "apply",
+            "doctor",
         ]
     )
 
@@ -600,7 +790,9 @@ def test_main_argv_end_to_end(monkeypatch, tmp_path, capsys) -> None:
         "argv",
         ["beatport-collector", "download", "--username", "u", "--password", "p"],
     )
-    cli_mod.main()
+    with pytest.raises(SystemExit) as exc:
+        cli_mod.main()
+    assert exc.value.code == 0
     assert "Done. Output: d.csv" in capsys.readouterr().out
 
 
@@ -756,6 +948,8 @@ def test_handle_enrich_prompts_for_missing_credentials(monkeypatch) -> None:
             fields=None,
             delay=0.0,
             allow_drives=None,
+            json=False,
+            quiet=False,
         )
     )
 
@@ -781,11 +975,14 @@ def test_handle_apply_limit_trims_manifest(monkeypatch) -> None:
             progress="p.jsonl",
             limit=1,
             art_overwrite=False,
+            fields=None,
             delay=0.0,
             workers=1,
             username="u",
             password="p",
             allow_drives=None,
+            json=False,
+            quiet=False,
         )
     )
     assert seen["n"] == 1
@@ -871,6 +1068,8 @@ class TestHandlerWiring:
                 fields=None,
                 delay=0.0,
                 allow_drives=None,
+                json=False,
+                quiet=False,
             )
         )
         assert seen["paths"] == ["C:\\a.mp3"]
@@ -902,6 +1101,8 @@ class TestHandlerWiring:
                 fields=None,
                 delay=0.0,
                 allow_drives="G",
+                json=False,
+                quiet=False,
             )
         )
         assert seen["paths"] == ["G:\\My Drive\\a.mp3"]
@@ -933,6 +1134,8 @@ class TestHandlerWiring:
                 fields=None,
                 delay=0.0,
                 allow_drives=None,
+                json=False,
+                quiet=False,
             )
         )
         assert seen["paths"] == ["G:\\My Drive\\a.mp3"]
@@ -998,11 +1201,14 @@ class TestHandlerWiring:
                 progress="p.jsonl",
                 limit=0,
                 art_overwrite=False,
+                fields=None,
                 delay=0.0,
                 workers=1,
                 username="u",
                 password="p",
                 allow_drives=None,
+                json=False,
+                quiet=False,
             )
         )
         assert seen["manifest"] == [{"path": "C:\\a"}]

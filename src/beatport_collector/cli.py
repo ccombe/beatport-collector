@@ -5,14 +5,16 @@ from __future__ import annotations
 import argparse
 import csv
 import getpass
+import json
 import logging
 import os
 import sys
 from collections import Counter
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, NoReturn
 
+import argcomplete
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -192,6 +194,20 @@ def _add_allow_drives(p: argparse.ArgumentParser) -> None:
     p.add_argument("--allow-drives", type=str, default=None, help=ALLOW_DRIVES_HELP)
 
 
+def _add_json_flags(p: argparse.ArgumentParser) -> None:
+    """Machine-readable output flags, shared by the reporting subcommands."""
+    p.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit results as JSON on stdout instead of human prose",
+    )
+    p.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress human progress output (implied by --json)",
+    )
+
+
 def _guard_writes(paths: list[str], spec: str | None) -> list[str]:
     """Drop paths off the allow-list, before anything is written.
 
@@ -224,8 +240,11 @@ def run_scan_and_playlist(
     playlist_dir: str,
     catalog_path: str | None = None,
     rekordbox_xml: bool = False,
-) -> None:
-    """Scan music directory, match to CSV, optionally create playlists."""
+) -> tuple[str, dict[str, str]]:
+    """Scan music directory, match to CSV, optionally create playlists.
+
+    Returns (matched_csv, created_playlists); printing is the caller's job.
+    """
     if not os.path.exists(csv_path):
         print(f"File not found: {csv_path}")
         sys.exit(1)
@@ -240,15 +259,14 @@ def run_scan_and_playlist(
         extensions=_extensions_from_arg(ext),
         output_path=output,
     )
-    print(f"Matched CSV: {matched}")
 
+    created: dict[str, str] = {}
     if make_playlists:
         output_csv = output or matched
         created = create_playlists(
             output_csv, output_dir=playlist_dir, rekordbox_xml=rekordbox_xml
         )
-        for name, path in sorted(created.items()):
-            print(f"  {name}: {path}")
+    return matched, created
 
 
 def _get_token(args: argparse.Namespace) -> str:
@@ -265,6 +283,51 @@ def _safe_print(msg: str) -> None:
         print(msg, flush=True)
     except UnicodeEncodeError:
         print(msg.encode("ascii", "replace").decode("ascii"), flush=True)
+
+
+def _result_json(r: EnrichResult) -> dict[str, Any]:
+    """One machine-readable record per enriched file."""
+    return {
+        "path": r.path,
+        "artist": r.artist,
+        "title": r.title,
+        "status": str(r.status),
+        "source": r.source,
+        "beatport_id": r.beatport_id,
+        "beatport_date": r.beatport_date,
+        "updates": dict(r.plan.updates) if r.plan is not None else {},
+        "applied": list(r.applied.updated) if r.applied is not None else [],
+        "error": r.applied.error if r.applied is not None else "",
+    }
+
+
+#: Write-stage failures. Anything else (no-candidates, ambiguous, skipped,
+#: dry-run intact) is a completed run, not a failure.
+_FAILURE_STATUSES = (EnrichStatus.ERROR, EnrichStatus.VERIFY_FAILED)
+_FAILURE_COUNT_KEYS = ("error", "verify-failed", "stuck", "stopped-early")
+
+
+def _exit_code(
+    results: list[EnrichResult] | None = None,
+    counts: Counter[str] | None = None,
+) -> int:
+    """0 clean, 2 if any file failed. Misuse exits 1 (see _Parser)."""
+    for r in results or []:
+        if r.status in _FAILURE_STATUSES:
+            return 2
+    if counts is not None:
+        for key in _FAILURE_COUNT_KEYS:
+            if counts.get(key):
+                return 2
+    return 0
+
+
+def _quiet(args: argparse.Namespace) -> bool:
+    """Human output off (explicitly, or implied by --json).
+
+    getattr: only the reporting subcommands carry these flags.
+    """
+    return bool(getattr(args, "quiet", False) or getattr(args, "json", False))
 
 
 _VU = "▁▂▃▄▅▆▇█"
@@ -328,12 +391,25 @@ def _progress_printer(
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    _dispatch(build_parser().parse_args())
+    parser = build_parser()
+    argcomplete.autocomplete(parser)
+    args = parser.parse_args()
+    if _quiet(args):
+        logging.getLogger().setLevel(logging.WARNING)
+    sys.exit(_dispatch(args))
+
+
+class _Parser(argparse.ArgumentParser):
+    """argparse exits 2 on misuse; 2 here means files failed mid-run."""
+
+    def error(self, message: str) -> NoReturn:
+        self.print_usage(sys.stderr)
+        self.exit(1, f"{self.prog}: error: {message}\n")
 
 
 def build_parser() -> argparse.ArgumentParser:
     """Assemble the full argv parser. Pure construction, no side effects."""
-    parser = argparse.ArgumentParser(
+    parser = _Parser(
         description="Download your Beatport purchase history and build playlists."
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -346,6 +422,7 @@ def build_parser() -> argparse.ArgumentParser:
     _enrich_parser(sub)
     _batch_parser(sub)
     _apply_parser(sub)
+    _doctor_parser(sub)
     return parser
 
 
@@ -426,6 +503,7 @@ def _scan_parser(sub):
         action="store_true",
         help="Also generate Rekordbox-compatible XML",
     )
+    _add_json_flags(p)
     return p
 
 
@@ -491,6 +569,7 @@ def _enrich_parser(sub):
     )
     _add_allow_drives(p)
     _add_credentials(p)
+    _add_json_flags(p)
     return p
 
 
@@ -551,9 +630,104 @@ def _batch_parser(sub):
         default=4,
         help="Parallel worker threads (up to 10; API stays polite via shared gate)",
     )
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="Process files even when genre/date/album are already present",
+    )
+    p.add_argument(
+        "--fields",
+        type=str,
+        default=None,
+        metavar="FIELDS",
+        help="Comma-separated frames to write (e.g. genre,album); default is all matched frames",
+    )
     _add_allow_drives(p)
     _add_credentials(p)
+    _add_json_flags(p)
     return p
+
+
+def _doctor_parser(sub):
+    p = sub.add_parser(
+        "doctor",
+        help="Check environment, credentials and defaults (offline, no network)",
+    )
+    p.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit checks as JSON on stdout instead of human prose",
+    )
+    return p
+
+
+def _check_deps() -> tuple[bool, str]:
+    """All runtime imports resolve (detail names them, never their paths)."""
+    try:
+        import dotenv  # noqa: F401
+        import mutagen  # noqa: F401
+        import requests  # noqa: F401
+    except ImportError as e:
+        return False, f"missing: {e}"
+    return True, "mutagen, requests, python-dotenv"
+
+
+def _doctor_checks() -> list[dict[str, Any]]:
+    """Offline environment checks. Values never printed, only presence."""
+    checks: list[dict[str, Any]] = []
+    checks.append(
+        {
+            "name": "python",
+            "ok": sys.version_info >= (3, 13),
+            "detail": sys.version.split()[0],
+        }
+    )
+    deps_ok, deps_detail = _check_deps()
+    checks.append({"name": "dependencies", "ok": deps_ok, "detail": deps_detail})
+    has_user = bool(os.environ.get("BP_USERNAME"))
+    has_pass = bool(os.environ.get("BP_PASSWORD"))
+    checks.append(
+        {
+            "name": "beatport-credentials",
+            "ok": has_user and has_pass,
+            "detail": (
+                "BP_USERNAME and BP_PASSWORD are set"
+                if has_user and has_pass
+                else "set BP_USERNAME/BP_PASSWORD env vars or pass --username/--password"
+            ),
+        }
+    )
+    has_discogs = bool(os.environ.get("DISCOGS_TOKEN"))
+    checks.append(
+        {
+            "name": "discogs-token",
+            "ok": has_discogs,
+            "detail": (
+                "DISCOGS_TOKEN is set (Discogs fallback enabled)"
+                if has_discogs
+                else "DISCOGS_TOKEN not set (Discogs fallback skipped)"
+            ),
+        }
+    )
+    checks.append(
+        {
+            "name": "drive-guard",
+            "ok": True,
+            "detail": "writes default to C: only (pass --allow-drives to widen)",
+        }
+    )
+    return checks
+
+
+def handle_doctor(args: argparse.Namespace) -> int:
+    checks = _doctor_checks()
+    ok = all(c["ok"] for c in checks)
+    if args.json:
+        print(json.dumps({"command": "doctor", "ok": ok, "checks": checks}))
+        return 0 if ok else 2
+    for c in checks:
+        _safe_print(f"  {'ok' if c['ok'] else 'FAIL'} {c['name']}: {c['detail']}")
+    return 0 if ok else 2
 
 
 def _apply_parser(sub):
@@ -592,12 +766,20 @@ def _apply_parser(sub):
         default=4,
         help="Parallel worker threads (up to 10)",
     )
+    p.add_argument(
+        "--fields",
+        type=str,
+        default=None,
+        metavar="FIELDS",
+        help="Comma-separated frames to write (e.g. genre,album); default is all matched frames",
+    )
     _add_allow_drives(p)
     _add_credentials(p)
+    _add_json_flags(p)
     return p
 
 
-def handle_download(args: argparse.Namespace) -> None:
+def handle_download(args: argparse.Namespace) -> int:
     out = run_download(
         max_pages=args.max_pages,
         delay=args.delay,
@@ -605,9 +787,10 @@ def handle_download(args: argparse.Namespace) -> None:
         password=args.password,
     )
     print(f"Done. Output: {out}")
+    return 0
 
 
-def handle_resume(args: argparse.Namespace) -> None:
+def handle_resume(args: argparse.Namespace) -> int:
     if not os.path.exists(args.existing_csv):
         print(f"File not found: {args.existing_csv}")
         sys.exit(1)
@@ -619,9 +802,10 @@ def handle_resume(args: argparse.Namespace) -> None:
         password=args.password,
     )
     print(f"Done. Output: {out}")
+    return 0
 
 
-def handle_catalog(args: argparse.Namespace) -> None:
+def handle_catalog(args: argparse.Namespace) -> int:
     if not os.path.isdir(args.music_dir):
         print(f"Directory not found: {args.music_dir}")
         sys.exit(1)
@@ -630,9 +814,10 @@ def handle_catalog(args: argparse.Namespace) -> None:
         extensions=_extensions_from_arg(args.ext),
         output_path=args.output,
     )
+    return 0
 
 
-def handle_scan_tags(args: argparse.Namespace) -> None:
+def handle_scan_tags(args: argparse.Namespace) -> int:
     import json
 
     from beatport_collector.scanner import scan_sparse_manifest
@@ -649,10 +834,11 @@ def handle_scan_tags(args: argparse.Namespace) -> None:
     with open(args.output, "w", encoding="utf-8") as f:
         json.dump(sparse, f)
     print(f"  {len(sparse)} sparse of {total} files -> {args.output}")
+    return 0
 
 
-def handle_scan(args: argparse.Namespace) -> None:
-    run_scan_and_playlist(
+def handle_scan(args: argparse.Namespace) -> int:
+    matched, created = run_scan_and_playlist(
         music_dir=args.music_dir,
         csv_path=args.csv,
         ext=args.ext,
@@ -662,9 +848,20 @@ def handle_scan(args: argparse.Namespace) -> None:
         catalog_path=args.catalog,
         rekordbox_xml=args.rekordbox,
     )
+    if args.json:
+        print(
+            json.dumps(
+                {"command": "scan", "matched_csv": matched, "playlists": created}
+            )
+        )
+        return 0
+    print(f"Matched CSV: {matched}")
+    for name, path in sorted(created.items()):
+        print(f"  {name}: {path}")
+    return 0
 
 
-def handle_playlist(args: argparse.Namespace) -> None:
+def handle_playlist(args: argparse.Namespace) -> int:
     if not os.path.exists(args.matched_csv):
         print(f"File not found: {args.matched_csv}")
         sys.exit(1)
@@ -673,6 +870,7 @@ def handle_playlist(args: argparse.Namespace) -> None:
     )
     for name, path in sorted(created.items()):
         print(f"  {name}: {path}")
+    return 0
 
 
 def _parse_fields(raw: str | None) -> frozenset[str] | None:
@@ -682,7 +880,7 @@ def _parse_fields(raw: str | None) -> frozenset[str] | None:
     return frozenset(f.strip().lower() for f in raw.split(",") if f.strip())
 
 
-def handle_enrich(args: argparse.Namespace) -> None:
+def handle_enrich(args: argparse.Namespace) -> int:
     from beatport_collector.enrich import enrich_files
 
     username, password = args.username, args.password
@@ -701,7 +899,12 @@ def handle_enrich(args: argparse.Namespace) -> None:
         force=args.force,
         fields=_parse_fields(args.fields),
     )
+    quiet = _quiet(args)
+    summaries = []
     for r in results:
+        summaries.append(_result_json(r))
+        if quiet:
+            continue
         if r.status == EnrichStatus.MATCHED and r.plan:
             _safe_print(
                 f"  MATCH {r.artist} - {r.title} -> id={r.beatport_id} date={r.beatport_date}"
@@ -711,9 +914,16 @@ def handle_enrich(args: argparse.Namespace) -> None:
                 print(f"    applied={r.applied}")
         else:
             _safe_print(f"  {r.status.upper()} {r.artist} - {r.title} ({r.path})")
+    if args.json:
+        print(
+            json.dumps(
+                {"command": "enrich", "dry_run": not args.apply, "results": summaries}
+            )
+        )
+    return _exit_code(results)
 
 
-def handle_batch(args: argparse.Namespace) -> None:
+def handle_batch(args: argparse.Namespace) -> int:
     import time
 
     from beatport_collector.batch_runner import load_manifest, run
@@ -735,12 +945,27 @@ def handle_batch(args: argparse.Namespace) -> None:
         delay=args.delay,
         workers=args.workers,
         art_overwrite=args.art_overwrite,
-        progress_cb=cb,
+        progress_cb=None if _quiet(args) else cb,
         apply_now=args.apply_now,
         chunk_size=args.chunk_size if args.chunk_size > 0 else 10**9,
         max_consecutive_failures=args.max_failures,
+        force=args.force,
+        fields=_parse_fields(args.fields),
     )
     el = time.monotonic() - t0
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "command": "batch",
+                    "total": total,
+                    "updated": counts.get("updated", 0),
+                    "counts": dict(counts),
+                    "elapsed_minutes": round(el / 60, 1),
+                }
+            )
+        )
+        return _exit_code(counts=counts)
     print(
         f"  DONE {total} files in {el / 60:.1f}m: "
         f"updated={state['updated']} {dict(counts)}"
@@ -751,9 +976,10 @@ def handle_batch(args: argparse.Namespace) -> None:
             f"Fix the cause, then rerun the same command to resume from "
             f"{args.progress}."
         )
+    return _exit_code(counts=counts)
 
 
-def handle_apply(args: argparse.Namespace) -> None:
+def handle_apply(args: argparse.Namespace) -> int:
     import time
 
     from beatport_collector.batch_runner import load_matched, run
@@ -775,16 +1001,31 @@ def handle_apply(args: argparse.Namespace) -> None:
         delay=args.delay,
         workers=args.workers,
         art_overwrite=args.art_overwrite,
-        progress_cb=cb,
+        progress_cb=None if _quiet(args) else cb,
+        fields=_parse_fields(args.fields),
     )
     el = time.monotonic() - t0
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "command": "apply",
+                    "total": total,
+                    "updated": counts.get("updated", 0),
+                    "counts": dict(counts),
+                    "elapsed_minutes": round(el / 60, 1),
+                }
+            )
+        )
+        return _exit_code(counts=counts)
     print(
         f"  DONE {total} files in {el / 60:.1f}m: "
         f"updated={state['updated']} {dict(counts)}"
     )
+    return _exit_code(counts=counts)
 
 
-def _dispatch(args: argparse.Namespace) -> None:
+def _dispatch(args: argparse.Namespace) -> int:
     """Execute the parsed command. All side effects live in handlers."""
     _HANDLERS = {
         "download": handle_download,
@@ -796,8 +1037,9 @@ def _dispatch(args: argparse.Namespace) -> None:
         "enrich": handle_enrich,
         "batch": handle_batch,
         "apply": handle_apply,
+        "doctor": handle_doctor,
     }
-    _HANDLERS[args.command](args)
+    return _HANDLERS[args.command](args)
 
 
 if __name__ == "__main__":

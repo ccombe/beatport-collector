@@ -18,7 +18,7 @@ import os
 import tempfile
 import threading
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -229,13 +229,22 @@ def _work_item(
     store: SnapshotStore | None,
     apply_now: bool,
     art_overwrite: bool,
+    force: bool = False,
+    fields: Collection[str] | None = None,
 ) -> EnrichResult:
     """One file: look it up (if needed) and write, in a single step."""
     path = str(m["path"])
     snapshot = m.get("snapshot") if isinstance(m.get("snapshot"), dict) else None
     if apply_now or snapshot is not None:
         # Streaming: search the catalog for this file right now.
-        found = enrich_one(token, path, dry_run=False, art_overwrite=art_overwrite)
+        found = enrich_one(
+            token,
+            path,
+            dry_run=False,
+            art_overwrite=art_overwrite,
+            force=force,
+            fields=fields,
+        )
         return (
             found
             if found is not None
@@ -248,6 +257,7 @@ def _work_item(
         store,
         art_overwrite,
         snapshot,
+        fields=fields,
     )
 
 
@@ -268,10 +278,12 @@ def _run_pool_chunk(
     apply_now: bool,
     art_overwrite: bool,
     workers: int,
+    force: bool = False,
+    fields: Collection[str] | None = None,
 ) -> None:
     run_pool(
         chunk,
-        lambda m: _work_item(m, token, store, apply_now, art_overwrite),
+        lambda m: _work_item(m, token, store, apply_now, art_overwrite, force, fields),
         lambda m, result, abandoned: _reap(tally, m, result, abandoned),
         workers=workers,
         describe=lambda m: str(m.get("path")),
@@ -285,6 +297,8 @@ def _run_dry_chunk(
     token: str,
     delay: float,
     workers: int,
+    force: bool = False,
+    fields: Collection[str] | None = None,
 ) -> None:
     # Dry-run results flow through progress_cb; the list itself is
     # discarded, but the call must still run for its side effects.
@@ -295,6 +309,8 @@ def _run_dry_chunk(
         delay=delay,
         workers=workers,
         progress_cb=lambda r, n, t: tally.report(r),
+        force=force,
+        fields=fields,
     )
 
 
@@ -304,6 +320,7 @@ def _apply_one(
     cache: SnapshotStore | dict[str, dict[str, object]],
     art_overwrite: bool,
     snapshot: dict[str, object] | None = None,
+    fields: Collection[str] | None = None,
 ) -> EnrichResult:
     if snapshot is not None:
         best = catalog_api.CatalogTrack.from_cache(snapshot)
@@ -321,6 +338,7 @@ def _apply_one(
         best,
         dry_run=False,
         art_overwrite=art_overwrite,
+        fields=fields,
     )
     # A refused write (verify failed, original untouched) must not be filed
     # under "matched", or the file silently never gets enriched.
@@ -430,6 +448,8 @@ def run(
     apply_now: bool = False,
     chunk_size: int = DEFAULT_CHUNK,
     max_consecutive_failures: int = DEFAULT_FAILURE_LIMIT,
+    force: bool = False,
+    fields: Collection[str] | None = None,
 ) -> Counter[str]:
     """Run a manifest end to end; returns status counts.
 
@@ -464,10 +484,18 @@ def run(
         chunk = todo[start : start + chunk_size]
         if apply_tags or apply_now:
             _run_pool_chunk(
-                tally, chunk, token, store, apply_now, art_overwrite, workers
+                tally,
+                chunk,
+                token,
+                store,
+                apply_now,
+                art_overwrite,
+                workers,
+                force,
+                fields,
             )
         else:
-            _run_dry_chunk(tally, chunk, token, delay, workers)
+            _run_dry_chunk(tally, chunk, token, delay, workers, force, fields)
         if store is not None:
             store.flush()
         if start + chunk_size < total:

@@ -222,12 +222,41 @@ uv run beatport-collector enrich track1.mp3 "track2.flac" --limit 5
 | `--chunk-size N` | 50 | Files per commit; bounds how much a crash costs |
 | `--max-failures N` | 15 | Stop after N consecutive failures (circuit breaker) |
 | `--overwrite` | off | Replace existing non-junk tags too |
-| `--force` | off | `enrich`: process files even when genre/date/album are already present |
-| `--fields F` | all | `enrich`: only write these frames, e.g. `--fields genre,album` |
+| `--force` | off | `enrich`/`batch`: process files even when genre/date/album are already present |
+| `--fields F` | all | `enrich`/`batch`/`apply`: only write these frames, e.g. `--fields genre,album` |
+| `--json` | off | `enrich`/`batch`/`apply`/`scan`: results as JSON on stdout instead of prose |
+| `--quiet` | off | Suppress human progress output (implied by `--json`) |
 | `--art-overwrite` | off | Also replace existing cover art |
 | `--delay S` | 2.0 | Delay between searches (politeness) |
 | `--workers N` | 4 | Worker threads (up to 10) |
 | `--allow-drives L` | `C` | Drives a writing run may touch, e.g. `--allow-drives G` |
+
+### Machine-readable output & exit codes
+
+`enrich`, `batch`, `apply` and `scan` take `--json` (one JSON object per
+result on stdout, plus a summary line) and `--quiet` (no human progress;
+implied by `--json`). Per-file `batch` records live in the `--progress`
+JSONL file either way. Exit codes: `0` clean, `1` misuse (bad argv),
+`2` if any file failed (error, verify-failed, stuck, stopped-early).
+A no-match is a completed run, not a failure — it exits 0.
+
+### doctor
+
+```bash
+uv run beatport-collector doctor [--json]
+```
+
+Offline environment check (no network): Python version, dependencies,
+Beatport credentials present (never printed), Discogs token present, and
+the drive-guard default. Exits 0 when everything is set, 2 otherwise.
+
+### Shell completion
+
+```bash
+eval "$(register-python-argcomplete beatport-collector)"
+```
+
+Tab-completes subcommands and flags (requires the package installed).
 
 ### Resuming and durability
 
