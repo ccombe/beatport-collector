@@ -157,7 +157,32 @@ class ID3Backend:
     #: than lose data, so the tagger may call restore_frames().
     repairs_dropped_frames = True
 
+    def _load_chunked(self, loader: Callable[[str], Any], path: str):
+        """Load an ID3-in-chunk container (WAV RIFF, AIFF IFF).
+
+        Bare ID3().save(path) writes a tag block at byte 0, which is valid
+        for MP3 but prepends onto the RIFF/FORM magic of a chunked file
+        and makes it unplayable. Loading through the container class gives an
+        ID3 subclass (_WaveID3 / _AIFFID3) whose save() writes
+        inside the container's id3  / ID3  chunk instead.
+        """
+        audio = _try_load(loader, path)
+        if audio is None:
+            return None
+        if audio.tags is None:
+            audio.add_tags()
+        return audio.tags
+
     def _load(self, path: str):
+        ext = os.path.splitext(path)[1].lower()
+        if ext == ".wav":
+            from mutagen.wave import WAVE
+
+            return self._load_chunked(WAVE, path)
+        if ext in (".aiff", ".aif"):
+            from mutagen.aiff import AIFF
+
+            return self._load_chunked(AIFF, path)
         from mutagen.id3 import ID3, ID3NoHeaderError
 
         try:
@@ -191,10 +216,15 @@ class ID3Backend:
     def write_updates(
         self, path: str, updates: dict[str, str], overwrite: bool
     ) -> None:
-        from mutagen.id3 import ID3, TXXX
+        from mutagen.id3 import TXXX
 
         classes = self._classes()
-        tags = self._load(path) or ID3()
+        # is None, never or ID3(): an untagged WAV/AIFF returns an
+        # empty _WaveID3/_AIFFID3 whose bool() is False, and
+        # replacing it with a bare ID3() writes an MP3 header at byte 0.
+        tags = self._load(path)
+        if tags is None:
+            raise OSError(f"unreadable file: {path}")
         for key, val in updates.items():
             fid, cls = self._MAP[key], classes[key]
             if _keep_existing(self._text(tags, fid), overwrite):
@@ -238,9 +268,8 @@ class ID3Backend:
         back into memory, we simply write the result out at v2.4 instead of
         v2.3. Nothing is invented and the audio stream is never touched.
         """
-        from mutagen.id3 import ID3
-
-        tags = ID3(path)
+        tags = self._load(path)
+        assert tags is not None
         tags.save(path, v2_version=4)
 
     def write_artwork(self, path: str, data: bytes, mime: str, replace: bool) -> bool:
