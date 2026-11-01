@@ -173,6 +173,46 @@ def test_id3_restore_frames_resaves(tmp_path) -> None:
     assert be.read_tags(str(p))["artist"] == "Art"
 
 
+def test_id3_wav_and_aiff_preserve_chunk_container(tmp_path) -> None:
+    import wave
+
+    be = ID3Backend()
+    wav_path = tmp_path / "track.wav"
+    with wave.open(str(wav_path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(44100)
+        wf.writeframes(bytes(882))
+
+    # Untagged WAV starts with RIFF and reads as empty logical frames.
+    assert be.read_tags(str(wav_path))["artist"] == ""
+    be.write_updates(
+        str(wav_path),
+        {"artist": "Adam Port", "title": "Positions", "genre": "Afro House"},
+        overwrite=False,
+    )
+    # RIFF header at byte 0 must survive (never prepended with an MP3 ID3 header).
+    assert wav_path.read_bytes()[:4] == b"RIFF"
+    with wave.open(str(wav_path), "rb") as wf:
+        assert wf.getnframes() == 441
+    tags = be.read_tags(str(wav_path))
+    assert (tags["artist"], tags["title"], tags["genre"]) == (
+        "Adam Port",
+        "Positions",
+        "Afro House",
+    )
+    # Second write hits the audio.tags is-not-None branch.
+    be.write_updates(str(wav_path), {"album": "Positions"}, overwrite=False)
+    assert be.read_tags(str(wav_path))["album"] == "Positions"
+
+    # Unreadable WAV/AIFF returns None from _load and raises OSError on write.
+    missing_wav = tmp_path / "missing.wav"
+    assert be.read_tags(str(missing_wav)) == {}
+    with pytest.raises(OSError):
+        be.write_updates(str(missing_wav), {"artist": "X"}, overwrite=False)
+    assert be.read_tags(str(tmp_path / "missing.aiff")) == {}
+
+
 # --- VorbisBackend on fakes ---
 
 
